@@ -1,32 +1,27 @@
 # schwab-agent
 
-Automated equity trading agent for Charles Schwab. Scans a configurable watchlist using multiple quantitative strategies (momentum, mean reversion, trend following, composite) and places orders via the `schwab-py` library.
+Automated equity and ETF trading agent for Charles Schwab. Connects via `schwab-py` OAuth2, scans a configurable watchlist with multiple quantitative strategies, and places orders through the Schwab API.
 
-All risk controls are enabled by default. **`DRY_RUN=true` is the default** — no real orders are placed until you explicitly pass `--live`.
+**`DRY_RUN=true` is the default** — no real orders until you explicitly pass `--live`.
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Clone / enter the project
 cd ~/Projects/schwab-agent
 
-# 2. Install dependencies (requires uv)
+# Install dependencies (requires uv)
 uv sync
 
-# 3. Configure
+# Configure
 cp .env.example .env
-$EDITOR .env   # set SCHWAB_API_KEY, SCHWAB_APP_SECRET at minimum
+$EDITOR .env   # set SCHWAB_API_KEY and SCHWAB_APP_SECRET at minimum
 
-# 4. Authenticate (opens browser for OAuth the first time)
-uv run python -c "
-from schwabagent.config import Config
-from schwabagent.schwab_client import SchwabClient
-SchwabClient(Config()).authenticate()
-"
+# Authenticate (opens browser for Schwab OAuth on first run)
+./run.sh status
 
-# 5. Dry-run scan
+# Dry-run scan — see signals, no trades placed
 ./run.sh scan
 ```
 
@@ -36,9 +31,8 @@ SchwabClient(Config()).authenticate()
 
 | Command | Description |
 |---------|-------------|
-| `./run.sh` | Dry-run one cycle (default) |
-| `./run.sh status` | Check Schwab connectivity and config |
-| `./run.sh scan` | Scan watchlist — show signals, no trades |
+| `./run.sh status` | Check Schwab connectivity, config, and Ollama |
+| `./run.sh scan` | Scan watchlist — show signals and ETF rankings, no trades |
 | `./run.sh once` | Dry-run one full scan + execute cycle |
 | `./run.sh loop` | Dry-run continuous loop (interval from `.env`) |
 | `./run.sh live` | **Live trading** — real orders, requires confirmation |
@@ -48,65 +42,150 @@ SchwabClient(Config()).authenticate()
 
 ## Configuration
 
-All settings live in `.env` (see `.env.example` for full reference).
-
-Key settings:
+All settings live in `.env`. Copy `.env.example` for the full reference.
 
 ```bash
-SCHWAB_API_KEY=...           # from developer.schwab.com
-SCHWAB_APP_SECRET=...
-WATCHLIST=AAPL,MSFT,GOOGL   # symbols to scan
-STRATEGIES=composite         # which strategies to run
-DRY_RUN=true                 # set false for live trading
+# Schwab — get from developer.schwab.com → My Apps
+SCHWAB_API_KEY=
+SCHWAB_APP_SECRET=
+SCHWAB_CALLBACK_URL=https://127.0.0.1   # must match your app's redirect URI
+
+# Strategies to run (comma-separated)
+STRATEGIES=etf_rotation,momentum,mean_reversion,trend_following,composite
+
+# Symbols scanned by momentum/mean_reversion/trend_following strategies
+WATCHLIST=AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,UNH
+
+# Risk limits
 MAX_TOTAL_EXPOSURE=50000.0   # hard cap on total $ deployed
 MAX_POSITION_VALUE=5000.0    # max $ per single position
-MAX_DRAWDOWN_PCT=15.0        # kill switch at -15% drawdown
+MAX_DRAWDOWN_PCT=15.0        # kill switch at -15% drawdown from peak
+
+# Safety
+DRY_RUN=true                 # set false or use ./run.sh live for real orders
 ```
 
 ---
 
 ## Strategies
 
+### ETF Rotation (`etf_rotation`) — primary
+
+Dual momentum rotation across a configurable ETF universe. Holds the top-N ETFs by momentum score and rotates out of laggards.
+
+**Scoring** — weighted momentum across four lookback periods:
+
+| Period | Weight |
+|--------|--------|
+| 1 month | 40% |
+| 3 months | 20% |
+| 6 months | 20% |
+| 12 months | 20% |
+
+**Bear-market filter** — if SPY falls below its 200-day SMA, all risky positions are sold and the portfolio rotates entirely to `ETF_SAFE_HAVEN` (default: `SHY`).
+
+**Position sizing** — equal weight: `portfolio_value / ETF_TOP_N`, clipped to risk limits.
+
+**LLM overlay** — when `LLM_ENABLED=true`, the local Ollama model provides a macro confidence score (0–1) that scales position size for top-ranked ETFs.
+
+**restricted issuer blocklist** — all restricted issuer ETFs are excluded by default via `ETF_BLOCKLIST`. They can never appear in the universe even if added to `ETF_UNIVERSE`.
+
+ETF rotation config:
+
+```bash
+ETF_UNIVERSE=SPY,QQQ,IWM,EFA,EEM,TLT,IEF,HYG,TIP,GLD,VNQ,SHY
+ETF_TOP_N=3                  # hold top 3 ETFs at any time
+ETF_MOMENTUM_PERIODS=1,3,6,12
+ETF_SAFE_HAVEN=SHY           # cash-equivalent ETF for bear market
+ETF_BEAR_FILTER=true
+ETF_BLOCKLIST=MINT,LDUR,SMUR,HYIN,ZROZ,BOND,PDBC,HYLS,LOWV,EMPW,MUNI,INFU,PFFD,REGL
+```
+
 ### Momentum (`momentum`)
-Uses SMA(20), SMA(50), RSI(14), and MACD. Buys when price is above both moving averages with confirming RSI and positive MACD. Sells into weakness.
+
+SMA(20/50) + RSI(14) + MACD. Buys when price is above both moving averages with confirming RSI and positive MACD histogram. Sells into weakness.
 
 ### Mean Reversion (`mean_reversion`)
-Uses Bollinger Bands(20,2), RSI(14), and z-score of returns. Buys at lower band when oversold; sells at upper band when overbought.
+
+Bollinger Bands(20,2) + RSI(14) + z-score. Buys at the lower band when oversold; sells at the upper band when overbought.
 
 ### Trend Following (`trend_following`)
-Uses EMA(20/50/200) alignment and ADX(14) trend strength. Requires strong ADX confirmation for strongest signals.
+
+EMA(20/50/200) alignment + ADX(14). Requires strong trend confirmation (ADX > 25) for the strongest signals.
 
 ### Composite (`composite`)
-Runs all three strategies and averages their scores (STRONG_BUY=2 … STRONG_SELL=−2). Final composite score ≥ 1.5 → STRONG_BUY, ≥ 0.5 → BUY, etc.
+
+Runs Momentum, Mean Reversion, and Trend Following simultaneously and averages their scores. Only trades when the consensus is clear.
+
+| Score | Signal |
+|-------|--------|
+| ≥ 1.5 | STRONG_BUY |
+| ≥ 0.5 | BUY |
+| > −0.5 | HOLD |
+| > −1.5 | SELL |
+| ≤ −1.5 | STRONG_SELL |
+
+---
+
+## Local LLM support
+
+The agent optionally uses a local [Ollama](https://ollama.com) model to add macro commentary and a confidence modifier to ETF rotation signals.
+
+```bash
+LLM_ENABLED=true
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:14b-instruct-q5_K_M
+OLLAMA_TIMEOUT=60
+```
+
+When enabled, the top-N ETF candidates are sent to the model with their momentum rank and return history. The model returns a `confidence` (0–1) that scales the target position size — high conviction increases allocation, low conviction reduces it. The agent runs fine with `LLM_ENABLED=false`.
 
 ---
 
 ## Risk management
 
-- **Position size limit** — max `MAX_POSITION_PCT` of portfolio or `MAX_POSITION_VALUE` $, whichever is lower.
-- **Total exposure cap** — agent stops buying when total deployed capital exceeds `MAX_TOTAL_EXPOSURE`.
-- **Drawdown kill switch** — all trading halts if portfolio drops more than `MAX_DRAWDOWN_PCT` from peak.
-- **Minimum signal score** — only trades with composite score ≥ `MIN_SIGNAL_SCORE` are executed.
-- **Min / max order size** — orders below `MIN_ORDER_VALUE` or above `MAX_ORDER_VALUE` are skipped.
+| Control | Setting | Default |
+|---------|---------|---------|
+| Position size cap | `MAX_POSITION_PCT` / `MAX_POSITION_VALUE` | 10% / $5,000 |
+| Total exposure cap | `MAX_TOTAL_EXPOSURE` | $50,000 |
+| Drawdown kill switch | `MAX_DRAWDOWN_PCT` | 15% |
+| Minimum signal score | `MIN_SIGNAL_SCORE` | 1.0 |
+| Order size floor | `MIN_ORDER_VALUE` | $100 |
+| Order size ceiling | `MAX_ORDER_VALUE` | $2,000 |
+
+The kill switch permanently halts all execution until manually cleared from `~/.schwab-agent/risk_state.json`.
 
 ---
 
 ## State files
 
-All state is stored in `~/.schwab-agent/`:
+All state is persisted in `~/.schwab-agent/`:
 
 | File | Contents |
 |------|----------|
-| `token.json` | Schwab OAuth token |
-| `risk_state.json` | Peak value, kill-switch status |
-| `trade_history.jsonl` | One trade per line |
-| `strategy_pnl.json` | Per-strategy cumulative P&L |
-| `audit.jsonl` | Full audit trail |
+| `token.json` | Schwab OAuth token (chmod 0600) |
+| `risk_state.json` | Peak portfolio value, kill-switch status |
+| `trade_history.jsonl` | One trade record per line |
+| `strategy_pnl.json` | Per-strategy cumulative P&L, win rate |
+| `audit.jsonl` | Full audit trail of all actions |
 
 ---
 
-## Safety defaults
+## Schwab app setup
 
-- `DRY_RUN=true` in `.env.example` — must explicitly set `false` or pass `--live`
-- `./run.sh live` requires typing `yes` at a confirmation prompt
-- Kill switch permanently halts execution until manually cleared from state
+1. Go to [developer.schwab.com](https://developer.schwab.com) → My Apps → Create App
+2. Set the callback/redirect URL to `https://127.0.0.1` (or whatever you set in `SCHWAB_CALLBACK_URL`)
+3. Copy the API key and app secret into `.env`
+4. Run `./run.sh status` — it will open a browser for OAuth on first run, then save `~/.schwab-agent/token.json`
+
+The token refreshes automatically. If it expires, delete `~/.schwab-agent/token.json` and re-run `./run.sh status`.
+
+---
+
+## Development
+
+```bash
+uv sync --dev
+uv run pytest          # run tests
+uv run pytest -v       # verbose
+```
