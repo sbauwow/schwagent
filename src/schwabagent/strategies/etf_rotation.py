@@ -328,7 +328,7 @@ class ETFRotationStrategy(Strategy):
             logger.debug("[etf_rotation] BUY blocked for %s: %s", symbol, reason)
             return None
 
-        if not self.config.DRY_RUN:
+        if self._should_execute(opp):
             result = self.client.place_order(account.account_hash, symbol, "BUY", quantity)
             if result.get("status") != "ok":
                 logger.error("[etf_rotation] BUY order failed for %s: %s", symbol, result.get("error"))
@@ -345,7 +345,7 @@ class ETFRotationStrategy(Strategy):
             "quantity": quantity,
             "price": price,
             "value": quantity * price,
-            "dry_run": self.config.DRY_RUN,
+            "dry_run": not self._should_execute(opp),
             **opp,
             **result,
         }
@@ -362,7 +362,7 @@ class ETFRotationStrategy(Strategy):
         if quantity <= 0:
             return None
 
-        if not self.config.DRY_RUN:
+        if self._should_execute(opp):
             result = self.client.place_order(account.account_hash, symbol, "SELL", quantity)
             if result.get("status") != "ok":
                 logger.error("[etf_rotation] SELL order failed for %s: %s", symbol, result.get("error"))
@@ -384,7 +384,7 @@ class ETFRotationStrategy(Strategy):
             "price": price,
             "value": quantity * price,
             "realized_pnl": round(pnl, 4),
-            "dry_run": self.config.DRY_RUN,
+            "dry_run": not self._should_execute(opp),
             **opp,
             **result,
         }

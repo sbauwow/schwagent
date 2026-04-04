@@ -33,6 +33,12 @@ class AccountSummary:
     total_value: float
     cash_available: float
     positions: list[Position] = field(default_factory=list)
+    # Account metadata from Schwab API
+    account_type: str = ""          # "CASH" or "MARGIN"
+    round_trips: int = 0            # day trades in rolling 5-day window (Schwab-tracked)
+    is_day_trader: bool = False     # PDT flag set by Schwab
+    is_closing_only: bool = False   # account restricted to closing orders only
+    unsettled_cash: float = 0.0     # cash not yet settled (T+1)
 
 
 @dataclass
@@ -48,87 +54,173 @@ class Quote:
 # ── Client ─────────────────────────────────────────────────────────────────────
 
 class SchwabClient:
-    """Thin wrapper around schwab-py that provides the data shapes the agent needs."""
+    """Thin wrapper around schwab-py that provides the data shapes the agent needs.
+
+    Uses two separate Schwab apps:
+    - Account client (SCHWAB_API_KEY) → positions, balances, orders
+    - Market client (SCHWAB_MARKET_API_KEY) → quotes, price history, OHLCV
+    """
 
     def __init__(self, config: Config):
         self.config = config
-        self._client: Any = None  # schwab-py client, set after authenticate()
+        self._client: Any = None        # account/trading client
+        self._market_client: Any = None  # market data client
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
-    def authenticate(self) -> bool:
-        """Load OAuth token from file, or start interactive OAuth flow if missing.
-
-        Returns True if authenticated successfully.
-        """
+    @staticmethod
+    def _load_token(
+        api_key: str, app_secret: str, token_path: Path, label: str,
+    ) -> Any | None:
+        """Try to load a client from an existing token file. Returns None on failure."""
         try:
             import schwab  # type: ignore
         except ImportError:
             logger.error("schwab-py is not installed — run `uv add schwab-py`")
-            return False
-
-        token_path = Path(self.config.SCHWAB_TOKEN_PATH).expanduser()
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-
-        api_key = self.config.SCHWAB_API_KEY
-        app_secret = self.config.SCHWAB_APP_SECRET
+            return None
 
         if not api_key or not app_secret:
-            logger.error("SCHWAB_API_KEY and SCHWAB_APP_SECRET must be set in .env")
-            return False
+            return None
+
+        if not token_path.exists():
+            logger.info("No %s token file at %s", label, token_path)
+            return None
 
         try:
-            if token_path.exists():
-                self._client = schwab.auth.client_from_token_file(
-                    token_path=str(token_path),
-                    api_key=api_key,
-                    app_secret=app_secret,
-                )
-                logger.info("Authenticated from token file: %s", token_path)
-                return True
-        except Exception as e:
-            logger.warning("Token file load failed (%s) — starting fresh OAuth flow", e)
-            token_path.unlink(missing_ok=True)
-
-        # Interactive OAuth flow — opens browser, then prompts for callback URL
-        callback_url = self.config.SCHWAB_CALLBACK_URL
-        logger.info("No valid token — starting OAuth flow (callback: %s)", callback_url)
-        try:
-            import webbrowser
-
-            ctx = schwab.auth.get_auth_context(api_key, callback_url)
-            print(f"\nOpen this URL to authorize:\n  {ctx.authorization_url}\n")
-            webbrowser.open(ctx.authorization_url)
-            received = input(
-                "After authorizing, paste the full redirect URL here:\n> "
-            ).strip()
-
-            def _write_token(token: dict) -> None:
-                import json as _json
-                token_path.write_text(_json.dumps(token))
-                try:
-                    token_path.chmod(0o600)
-                except OSError:
-                    pass
-                logger.info("Token saved to %s", token_path)
-
-            self._client = schwab.auth.client_from_received_url(
+            client = schwab.auth.client_from_token_file(
+                token_path=str(token_path),
                 api_key=api_key,
                 app_secret=app_secret,
-                auth_context=ctx,
-                received_url=received,
-                token_write_func=_write_token,
             )
-            logger.info("OAuth complete")
-            return True
+            logger.info("%s client loaded from %s", label, token_path)
+            return client
         except Exception as e:
-            logger.error("Authentication failed: %s", e)
-            return False
+            logger.warning("%s token load failed: %s", label, e)
+            return None
+
+    @staticmethod
+    def _enroll_interactive(
+        api_key: str, app_secret: str, callback_url: str, token_path: Path, label: str,
+    ) -> Any | None:
+        """Run the Schwab OAuth browser flow. Opens browser, handles callback automatically."""
+        try:
+            import schwab  # type: ignore
+        except ImportError:
+            logger.error("schwab-py is not installed — run `uv add schwab-py`")
+            return None
+
+        if not api_key or not app_secret:
+            logger.error("No credentials configured for %s — set them in .env", label)
+            return None
+
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.unlink(missing_ok=True)
+
+        print(f"\n  Enrolling {label} API — browser will open for Schwab login...")
+        print(f"  Callback URL: {callback_url}")
+        print(f"  Token will be saved to: {token_path}\n")
+
+        # Try automatic flow first (spins up local HTTPS server for callback)
+        try:
+            client = schwab.auth.client_from_login_flow(
+                api_key=api_key,
+                app_secret=app_secret,
+                callback_url=callback_url,
+                token_path=str(token_path),
+                callback_timeout=300,
+            )
+            try:
+                token_path.chmod(0o600)
+            except OSError:
+                pass
+            logger.info("%s enrollment complete (auto flow)", label)
+            return client
+        except Exception as e:
+            logger.warning("%s auto flow failed (%s), falling back to manual flow", label, e)
+
+        # Fallback: manual paste flow
+        try:
+            client = schwab.auth.client_from_manual_flow(
+                api_key=api_key,
+                app_secret=app_secret,
+                callback_url=callback_url,
+                token_path=str(token_path),
+            )
+            try:
+                token_path.chmod(0o600)
+            except OSError:
+                pass
+            logger.info("%s enrollment complete (manual flow)", label)
+            return client
+        except Exception as e:
+            logger.error("%s enrollment failed: %s", label, e)
+            return None
+
+    def authenticate(self) -> bool:
+        """Load both clients from existing token files.
+
+        Returns True if at least one client loaded successfully.
+        Use enroll() for the interactive browser-based OAuth flow.
+        """
+        self._client = self._load_token(
+            api_key=self.config.SCHWAB_API_KEY,
+            app_secret=self.config.SCHWAB_APP_SECRET,
+            token_path=Path(self.config.SCHWAB_TOKEN_PATH).expanduser(),
+            label="Account",
+        )
+
+        self._market_client = self._load_token(
+            api_key=self.config.SCHWAB_MARKET_API_KEY,
+            app_secret=self.config.SCHWAB_MARKET_APP_SECRET,
+            token_path=Path(self.config.SCHWAB_MARKET_TOKEN_PATH).expanduser(),
+            label="Market",
+        )
+
+        # Fall back: if only one is configured, use it for both
+        if self._client and not self._market_client:
+            self._market_client = self._client
+            logger.info("No market credentials — using account client for market data")
+        elif self._market_client and not self._client:
+            self._client = self._market_client
+            logger.info("No account credentials — using market client for account data")
+
+        return self._client is not None or self._market_client is not None
+
+    def enroll(self, which: str = "both") -> bool:
+        """Interactive OAuth enrollment via browser.
+
+        Args:
+            which: "account", "market", or "both"
+        """
+        if which in ("account", "both"):
+            self._client = self._enroll_interactive(
+                api_key=self.config.SCHWAB_API_KEY,
+                app_secret=self.config.SCHWAB_APP_SECRET,
+                callback_url=self.config.SCHWAB_CALLBACK_URL,
+                token_path=Path(self.config.SCHWAB_TOKEN_PATH).expanduser(),
+                label="Account",
+            )
+
+        if which in ("market", "both"):
+            self._market_client = self._enroll_interactive(
+                api_key=self.config.SCHWAB_MARKET_API_KEY,
+                app_secret=self.config.SCHWAB_MARKET_APP_SECRET,
+                callback_url=self.config.SCHWAB_MARKET_CALLBACK_URL,
+                token_path=Path(self.config.SCHWAB_MARKET_TOKEN_PATH).expanduser(),
+                label="Market",
+            )
+
+        return self._client is not None or self._market_client is not None
 
     def _require_client(self) -> Any:
         if self._client is None:
             raise RuntimeError("Not authenticated — call authenticate() first")
         return self._client
+
+    def _require_market_client(self) -> Any:
+        if self._market_client is None:
+            raise RuntimeError("Market client not authenticated — call authenticate() first")
+        return self._market_client
 
     # ── Account ───────────────────────────────────────────────────────────────
 
@@ -172,6 +264,7 @@ class SchwabClient:
             balance = acct.get("currentBalances", {})
             total_value = float(balance.get("liquidationValue", balance.get("totalValue", 0)))
             cash = float(balance.get("cashBalance", balance.get("availableFunds", 0)))
+            unsettled = float(balance.get("unsettledCash", 0))
             acct_number = acct.get("accountNumber", "****")
             # The account hash comes from the parent wrapper in list responses
             # or from the direct get_account call
@@ -202,6 +295,11 @@ class SchwabClient:
                 total_value=total_value,
                 cash_available=cash,
                 positions=positions,
+                account_type=acct.get("type", ""),
+                round_trips=int(acct.get("roundTrips", 0)),
+                is_day_trader=bool(acct.get("isDayTrader", False)),
+                is_closing_only=bool(acct.get("isClosingOnlyRestricted", False)),
+                unsettled_cash=unsettled,
             )
         except Exception as e:
             logger.error("Failed to parse account: %s", e)
@@ -213,7 +311,7 @@ class SchwabClient:
         """Fetch live quotes for a list of symbols."""
         if not symbols:
             return {}
-        client = self._require_client()
+        client = self._require_market_client()
         try:
             resp = client.get_quotes(symbols)
             resp.raise_for_status()
@@ -246,7 +344,7 @@ class SchwabClient:
         Returns a DataFrame with columns: open, high, low, close, volume
         indexed by date (DatetimeIndex, UTC).
         """
-        client = self._require_client()
+        client = self._require_market_client()
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=days + 30)  # buffer for weekends/holidays
 
@@ -282,6 +380,72 @@ class SchwabClient:
         # Trim to requested days
         cutoff = end - timedelta(days=days)
         df = df[df.index >= pd.Timestamp(cutoff)]
+        return df
+
+    def get_intraday_ohlcv(
+        self,
+        symbol: str,
+        interval_minutes: int = 3,
+        days: int = 1,
+    ) -> pd.DataFrame:
+        """Fetch intraday OHLCV and resample to the requested interval.
+
+        Pulls 1-minute bars from Schwab and aggregates to *interval_minutes*.
+        Filters to regular session hours (9:30–16:00 ET) only.
+
+        Returns DataFrame with columns: open, high, low, close, volume
+        indexed by datetime (DatetimeIndex, US/Eastern).
+        """
+        client = self._require_market_client()
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days + 1)  # buffer for weekends
+
+        try:
+            resp = client.get_price_history_every_minute(
+                symbol,
+                start_datetime=start,
+                end_datetime=end,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.error("get_intraday_ohlcv(%s) failed: %s", symbol, e)
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        candles = data.get("candles", [])
+        if not candles:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        rows = []
+        for c in candles:
+            rows.append({
+                "date": pd.Timestamp(c["datetime"], unit="ms", tz="UTC"),
+                "open": float(c["open"]),
+                "high": float(c["high"]),
+                "low": float(c["low"]),
+                "close": float(c["close"]),
+                "volume": int(c["volume"]),
+            })
+
+        df = pd.DataFrame(rows).set_index("date").sort_index()
+
+        # Convert to Eastern and filter regular session (9:30–16:00)
+        df = df.tz_convert("US/Eastern")
+        df = df.between_time("09:30", "15:59")
+
+        if df.empty:
+            return df
+
+        # Resample to requested interval
+        if interval_minutes > 1:
+            df = df.resample(f"{interval_minutes}min").agg({
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }).dropna()
+
         return df
 
     # ── Orders ────────────────────────────────────────────────────────────────

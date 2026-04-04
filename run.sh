@@ -15,6 +15,7 @@
 set -e
 cd "$(dirname "$0")"
 
+export PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}"
 VENV=".venv/bin/python"
 
 # Colors
@@ -39,22 +40,80 @@ check_ollama() {
 }
 
 check_schwab() {
-    if $VENV -c "
+    RESULT=$($VENV -c "
 from schwabagent.config import Config
 from schwabagent.schwab_client import SchwabClient
 c = SchwabClient(Config())
 ok = c.authenticate()
-print('ok' if ok else 'fail')
-" 2>/dev/null | grep -q "ok"; then
-        echo -e "  ${GREEN}✓${NC} Schwab API connected"
-        return 0
+acct = '✓' if c._client else '✗'
+mkt = '✓' if c._market_client else '✗'
+print(f'{acct}|{mkt}')
+" 2>/dev/null)
+    ACCT=$(echo "$RESULT" | cut -d'|' -f1)
+    MKT=$(echo "$RESULT" | cut -d'|' -f2)
+
+    if [ "$ACCT" = "✓" ]; then
+        echo -e "  ${GREEN}✓${NC} Schwab Account API connected"
     else
-        echo -e "  ${RED}✗${NC} Schwab API not reachable — check .env credentials and token file"
-        return 1
+        echo -e "  ${RED}✗${NC} Schwab Account API not reachable — run ${CYAN}./run.sh enroll${NC}"
     fi
+    if [ "$MKT" = "✓" ]; then
+        echo -e "  ${GREEN}✓${NC} Schwab Market Data API connected"
+    else
+        echo -e "  ${RED}✗${NC} Schwab Market Data API not reachable — run ${CYAN}./run.sh enroll${NC}"
+    fi
+    [ "$ACCT" = "✓" ] || [ "$MKT" = "✓" ]
 }
 
 # ---------- commands ----------
+
+cmd_enroll() {
+    echo ""
+    echo -e "${CYAN}=== Schwab OAuth Enrollment ===${NC}"
+    echo ""
+    echo "  Which API to enroll?"
+    echo ""
+    echo "    1) Account API  — positions, balances, orders"
+    echo "    2) Market API   — quotes, price history, OHLCV"
+    echo "    3) Both"
+    echo ""
+    read -p "  Choose [1/2/3]: " choice
+
+    case "$choice" in
+        1) WHICH="account" ;;
+        2) WHICH="market" ;;
+        3) WHICH="both" ;;
+        *) echo "  Invalid choice."; return ;;
+    esac
+
+    $VENV -c "
+import sys
+from schwabagent.config import Config
+from schwabagent.schwab_client import SchwabClient
+c = SchwabClient(Config())
+ok = c.enroll('$WHICH')
+if not ok:
+    print('  \033[0;31m✗\033[0m Enrollment failed')
+    sys.exit(1)
+print()
+# Verify by loading from token files
+c2 = SchwabClient(Config())
+c2.authenticate()
+if c2._client:
+    print('  \033[0;32m✓\033[0m Account API ready')
+    accounts = c2.get_all_accounts()
+    if accounts:
+        for a in accounts:
+            print(f'    {a.account_number}  value=\${a.total_value:,.2f}  cash=\${a.cash_available:,.2f}')
+else:
+    print('  \033[1;33m!\033[0m Account API not enrolled')
+if c2._market_client and c2._market_client is not c2._client:
+    print('  \033[0;32m✓\033[0m Market Data API ready')
+elif not c2._client:
+    print('  \033[1;33m!\033[0m Market Data API not enrolled')
+"
+    echo ""
+}
 
 cmd_status() {
     echo ""
@@ -70,6 +129,16 @@ cmd_status() {
     echo -e "    STRATEGIES   = $(grep '^STRATEGIES' .env 2>/dev/null | cut -d= -f2)"
     echo -e "    MAX_EXPOSURE = \$$(grep '^MAX_TOTAL_EXPOSURE' .env 2>/dev/null | cut -d= -f2)"
     echo -e "    LLM          = $(grep '^LLM_ENABLED' .env 2>/dev/null | cut -d= -f2)"
+    echo ""
+    echo -e "  Live trading by strategy:"
+    for STRAT in ETF_ROTATION MOMENTUM MEAN_REVERSION TREND_FOLLOWING COMPOSITE ETF_SCALP; do
+        VAL=$(grep "^LIVE_${STRAT}" .env 2>/dev/null | cut -d= -f2)
+        if [ "$VAL" = "true" ]; then
+            echo -e "    LIVE_${STRAT} = ${GREEN}true${NC}"
+        else
+            echo -e "    LIVE_${STRAT} = ${YELLOW}false${NC}"
+        fi
+    done
     echo ""
 
     # Show account summary if connected
@@ -183,23 +252,73 @@ print()
 " 2>/dev/null
 }
 
+cmd_pf() {
+    SYMBOL="${2:-SPY}"
+    shift 2 2>/dev/null || shift 1 2>/dev/null || true
+
+    # Parse optional flags
+    BOX="0.01"; REV="3"; DUR="1.0"; PER="2.0"; METHOD="HL"; STYLE="True"; TRENDS="True"; META="False"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -b|--box-size)    BOX="$2"; shift 2 ;;
+            -r|--reversal)    REV="$2"; shift 2 ;;
+            -d|--duration)    DUR="$2"; shift 2 ;;
+            -p|--period)      PER="$2"; shift 2 ;;
+            -m|--method)      METHOD="$2"; shift 2 ;;
+            --no-style)       STYLE="False"; shift ;;
+            --no-trends)      TRENDS="False"; shift ;;
+            --meta)           META="True"; shift ;;
+            *)                shift ;;
+        esac
+    done
+
+    $VENV -c "
+from schwabagent.config import Config
+from schwabagent.schwab_client import SchwabClient
+from schwabagent.pf import print_pf_chart
+
+config = Config()
+client = SchwabClient(config)
+if not client.authenticate():
+    print('Auth failed')
+    exit(1)
+
+print_pf_chart(
+    symbol='${SYMBOL}'.upper(),
+    client=client,
+    box_size=${BOX},
+    reversal=${REV},
+    duration=${DUR},
+    period=${PER},
+    method='${METHOD}',
+    style=${STYLE},
+    trend_lines=${TRENDS},
+    show_meta=${META},
+)
+"
+}
+
 # ---------- main ----------
 
 case "${1:-once}" in
+    enroll)  cmd_enroll ;;
     status)  cmd_status ;;
     scan)    cmd_scan ;;
     once)    cmd_once ;;
     loop)    cmd_loop ;;
     live)    cmd_live ;;
     pnl)     cmd_pnl ;;
+    pf)      cmd_pf "$@" ;;
     *)
-        echo "Usage: ./run.sh [status|scan|once|loop|live|pnl]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf]"
         echo ""
+        echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
         echo "  scan     Show signals for watchlist (no execution)"
         echo "  once     Dry-run one full scan+execute cycle (default)"
         echo "  loop     Dry-run continuous (scans on interval)"
         echo "  live     REAL MONEY mode — places actual orders"
         echo "  pnl      Show realized P&L by strategy"
+        echo "  pf       Point & Figure chart (e.g. ./run.sh pf AAPL)"
         ;;
 esac

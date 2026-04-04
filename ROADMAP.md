@@ -1,164 +1,183 @@
 # schwab-agent Roadmap
 
-Features sourced from hermes-agent, prowler-agent, and the rebalancer.
 Ranked by ROI — highest value, lowest effort first.
 
 ---
 
-## Phase 1 — Autonomous operation (do first)
+## Completed
 
-### 1. Alerting
-**Source:** `hermes-agent/tools/send_message_tool.py`
+### Dual Schwab API architecture
+Separate OAuth apps for Account (trading) and Market Data APIs. Each has independent credentials, tokens, and enrollment flow.
 
-Push notifications when things happen so you don't need to watch the terminal.
+### Per-strategy live trading toggles
+Two-layer safety: global `DRY_RUN` + per-strategy `LIVE_<name>` flags. All default to off.
 
-Covers:
-- Kill switch triggered (drawdown exceeded)
-- Live trade executed (symbol, side, quantity, price, P&L)
-- Daily P&L summary (every strategy, realized + unrealized)
-- Bear-market filter activated / deactivated
-- Any error that stops the agent loop
+### Trading rules engine
+Auto-detects account type (CASH/MARGIN) from Schwab API. Enforces PDT rule using Schwab's own `roundTrips` counter, closing-only restrictions, and wash sale warnings.
 
-Platforms: Telegram first, Discord and Slack as optional extras.
-Config additions: `ALERT_TELEGRAM_TOKEN`, `ALERT_TELEGRAM_CHAT_ID`, `ALERT_DISCORD_WEBHOOK`.
+### ETF Scalp strategy
+Intraday 3-min bar strategy: volume spike + price breakout + trend filter entry, tight TP/SL exits, settlement-aware tranche management for cash accounts.
 
-**~150 lines** — `src/schwabagent/alerts.py`
+### Telegram integration
+Bot with alerts (trades, kill switch, errors), commands (/status, /pnl, /positions, /kill, /resume), and inline-button trade approval flow.
+
+### Point & Figure charting
+`pypf` integration powered by Schwab market data. Terminal P&F charts via `./run.sh pf SYMBOL`.
+
+### Multi-account support
+Scalp strategy can target a separate account hash from daily strategies.
+
+### Schwab API reference
+Full field-level documentation of every endpoint response in `docs/schwab-api-reference.md`.
+
+### Strategy template
+`TEMPLATE.py` with 10-question design checklist and wiring checklist for new strategies.
 
 ---
 
-### 2. Cron scheduler
-**Source:** `hermes-agent/cron/scheduler.py`
+## Phase 1 — Data and reliability
 
-Replace manual `./run.sh loop` with a persistent scheduled job queue. Survives restarts — next run time is written before execution so a crash doesn't skip a cycle.
+### 1. WebSocket streaming
+**Why:** The scalp strategy polls quotes every 15 seconds. At 0.15% targets on SPY, that's too slow — price can move $1 in seconds. Streaming fixes this.
+
+Use `streamerInfo` from the Schwab user preferences endpoint (`wss://streamer-api.schwab.com/ws`) for real-time tick data. Replace polling in the scalp strategy with push-based price updates for instant TP/SL triggers.
+
+**~400 lines** — `src/schwabagent/streaming.py`
+
+### 2. Order fill tracking
+**Why:** We place market orders and assume the fill price equals the quoted price. The actual fill can differ, which makes TP/SL levels inaccurate.
+
+After placing an order, poll `GET /accounts/{hash}/orders` to get the actual fill price, then update the position's entry price and recalculate exit levels.
+
+**~150 lines** — update `schwab_client.py` + `strategies/etf_scalp.py`
+
+### 3. Cron scheduler
+**Why:** Replace manual `./run.sh loop` with a persistent scheduled job queue. Survives restarts.
 
 Example schedule:
 ```
-09:30  weekdays   → scan + execute
-15:00  weekdays   → ETF rotation check
-16:00  weekdays   → daily P&L summary → alerts
-08:00  monday     → weekly performance report
+09:30  weekdays  → scalp strategy starts
+09:35  weekdays  → daily scan + execute
+15:00  weekdays  → ETF rotation check
+15:45  weekdays  → scalp session close
+16:00  weekdays  → daily P&L → Telegram
+08:00  monday    → weekly performance report
 ```
 
-Job queue persisted at `~/.schwab-agent/cron.json`.
-Cron expressions parsed by `croniter`.
+Job queue persisted at `~/.schwab-agent/cron.json`. Parsed by `croniter`.
 
-**~300 lines** — `src/schwabagent/scheduler.py` + `schwab-agent schedule` CLI subcommand
+**~300 lines** — `src/schwabagent/scheduler.py`
 
 ---
 
-### 3. Earnings calendar
-**Source:** `rebalancer/app/earnings/scraper.py`
+## Phase 2 — Intelligence
 
-Pull upcoming earnings dates for watchlist symbols via yfinance (no browser needed).
-Auto-reduce position size or skip trading in the 48-hour window around an earnings report to avoid surprise moves.
+### 4. Earnings calendar
+**Why:** Earnings reports cause 5-10% overnight moves. The agent should not hold positions through earnings unless explicitly told to.
 
-Behaviour:
-- `earnings_today()` → list of symbols reporting today or tomorrow
-- Strategy `execute()` skips BUY signals for symbols in earnings window
-- Existing positions flagged but not force-sold (configurable)
+Pull upcoming earnings dates via yfinance or Schwab fundamentals (`fundamental.lastEarningsDate`). Auto-reduce position size or skip trading in the 48-hour window around an earnings report.
 
 **~150 lines** — `src/schwabagent/earnings.py`
 
+### 5. Dividend awareness
+**Why:** ETF rotation buys/sells around ex-dividend dates can cause unintended tax events or price-drop surprises.
+
+Use `fundamental.nextDivExDate` from the quotes endpoint. Flag symbols approaching ex-date. Optionally defer sells until after ex-date to capture the dividend, or defer buys to avoid buying the drop.
+
+**~100 lines** — integrate into ETF rotation scan
+
+### 6. Liquidity filter
+**Why:** The scalp strategy assumes tight spreads. Illiquid ETFs will eat the 0.15% target in spread alone.
+
+Use `fundamental.avg10DaysVolume` from quotes. Skip symbols below a configurable volume threshold. Log when a symbol is excluded for liquidity.
+
+**~50 lines** — integrate into scalp scan
+
+### 7. Intermarket regime model
+**Why:** Strategy performance varies by market regime. A macro overlay can adjust strategy weights or pause strategies in unfavorable conditions.
+
+Port `intermarket.py` from the rebalancer: 7-signal macro model (risk appetite, credit conditions, inflation pressure, yield curve, etc.) from cross-asset reference symbols (SPY, TLT, HYG, GLD, IWM).
+
+**~400 lines** — `src/schwabagent/intermarket.py`
+
 ---
 
-## Phase 2 — Visibility and auditability
+## Phase 3 — Validation
 
-### 4. SQLite audit trail
-**Source:** `hermes-agent/hermes_state.py`
+### 8. Backtesting framework
+**Why:** Every parameter in every strategy is an untested assumption. Need walk-forward replay against historical data before going live.
 
-Replace current JSONL files with a queryable SQLite database at `~/.schwab-agent/agent.db`.
+Metrics: CAGR, Sharpe, Sortino, max drawdown, win rate, profit factor. Per-year breakdown. CLI: `./run.sh backtest --strategy etf_rotation --start 2020-01-01 --end 2024-12-31`.
 
-Tables:
-- `trades` — every executed order with full context (signal, score, indicators, strategy)
-- `signals` — every scan result, whether traded or not
-- `risk_events` — drawdown checks, kill switch triggers, exposure cap hits
-- `etf_scores` — per-cycle ETF ranking snapshots
+Port and adapt `backtest.py` from the rebalancer.
 
-Enables queries like:
-```sql
-SELECT * FROM trades WHERE symbol='SPY' AND realized_pnl < 0;
-SELECT * FROM signals WHERE strategy='momentum' AND signal='STRONG_BUY' ORDER BY ts DESC LIMIT 20;
-```
+**~600 lines** — `src/schwabagent/backtest.py`
 
-Existing JSONL files kept as backup during migration.
+### 9. Portfolio optimizer
+**Why:** Current position sizing is naive (equal weight or fixed dollar). MPT optimization can improve risk-adjusted returns.
+
+Port `optimizer/engine.py` from the rebalancer. Strategies: Max Sharpe, Min Volatility, Efficient Risk, HRP. Uses `pypfopt`.
+
+**~300 lines** — `src/schwabagent/optimizer.py`
+
+---
+
+## Phase 4 — Auditability
+
+### 10. SQLite audit trail
+**Why:** JSONL files are append-only and hard to query. A proper database enables analytics.
+
+Tables: `trades`, `signals`, `risk_events`, `etf_scores`. Existing JSONL kept as backup during migration.
 
 **~400 lines** — `src/schwabagent/db.py`
 
----
+### 11. Strategy memory
+**Why:** The agent has no memory across runs. It can't learn from patterns like "HYG underperformed 3 consecutive bear-filter cycles" or "momentum win rate drops in high-vol months."
 
-### 5. Persistent strategy memory
-**Source:** `hermes-agent/tools/memory_tool.py`
-
-Markdown file at `~/.schwab-agent/memory.md` where the agent accumulates notes across runs.
-
-Examples of what gets written:
-- "HYG underperformed 3 consecutive bear-filter cycles — consider removing from universe"
-- "Momentum strategy win rate dropped to 38% in high-volatility months"
-- "ETF_TOP_N=3 produced better Sharpe than TOP_N=5 in 2024"
-
-LLM writes entries when it notices patterns (if `LLM_ENABLED=true`).
-Human-editable — add your own notes and the agent will respect them.
+Markdown file at `~/.schwab-agent/memory.md`. LLM writes entries when it notices patterns (if enabled). Human-editable.
 
 **~100 lines** — `src/schwabagent/memory.py`
 
 ---
 
-## Phase 3 — Validation and robustness
+## Phase 5 — Interface
 
-### 6. Backtesting framework
-**Source:** Build from scratch (nothing to copy)
-
-Walk-forward replay of any strategy against historical OHLCV pulled via the Schwab API or yfinance.
-
-Metrics:
-- CAGR, Sharpe ratio, Sortino ratio
-- Max drawdown, max drawdown duration
-- Win rate, average win / average loss, profit factor
-- Per-year breakdown
-
-CLI: `./run.sh backtest --strategy etf_rotation --start 2020-01-01 --end 2024-12-31`
-
-Output: markdown report + CSV of all simulated trades.
-
-**~600 lines** — `src/schwabagent/backtest.py`
-
----
-
-### 7. Webhook receiver
-**Source:** `hermes-agent/gateway/platforms/webhook.py`
-
-Lightweight aiohttp server (separate from the web dashboard) that accepts HTTP POST triggers.
-
-Routes:
-- `POST /scan` — run one scan cycle immediately
-- `POST /pnl` — return current P&L as JSON
-- `POST /kill` — manually trigger kill switch
-- `POST /resume` — clear kill switch
-
-Useful for integrating external volatility monitors, TradingView alerts, or a mobile shortcut.
-HMAC signature validation on all routes.
-
-**~250 lines** — `src/schwabagent/webhook.py`
-
----
-
-## Phase 4 — Interface
-
-### 8. Web dashboard
-**Source:** `rebalancer/app/portfolio/` + `app/market/`
-
+### 12. Web dashboard
 Minimal FastAPI + Jinja2 dashboard at `http://localhost:5000`.
 
 Pages:
 - `/` — current positions, cash, total value, unrealized P&L
-- `/etf` — ETF rotation rankings table (rank, score, 1m/3m/6m/12m returns, signal, LLM commentary)
+- `/etf` — ETF rotation rankings table
 - `/signals` — latest scan results per strategy
-- `/pnl` — realized P&L by strategy, win rate, trade count
-- `/risk` — risk state, drawdown from peak, kill switch status
+- `/scalp` — live scalp positions, tranches, TP/SL levels
+- `/pnl` — realized P&L by strategy
+- `/risk` — risk state, trading rules status, PDT counter
+- `/pf/:symbol` — Point & Figure chart (rendered in browser)
 
-Run alongside the agent: `./run.sh web` starts uvicorn on port 5000.
+**~500 lines** — `src/schwabagent/web/`
 
-**~400 lines** — `src/schwabagent/web/`
+### 13. Telegram trade approval UX polish
+Wire `request_approval()` into the strategy execute path so every live trade requires a button tap. Add inline position management (close position, adjust TP/SL from Telegram).
+
+**~200 lines** — update strategies + `telegram.py`
+
+---
+
+## Phase 6 — Advanced strategies
+
+### 14. Options overlay
+**Why:** The Schwab API returns full options chain data with greeks. Covered calls on held positions can generate income, and protective puts can limit downside.
+
+Start with covered call writing on ETF rotation holdings. Use delta/theta from the chain to select strikes.
+
+**~500 lines** — `src/schwabagent/strategies/options_overlay.py`
+
+### 15. Pairs / spread trading
+**Why:** Market-neutral strategy that profits from relative moves between correlated ETFs (e.g., SPY vs QQQ, TLT vs IEF).
+
+Cointegration-based entry, mean-reversion exit. Lower correlation to market direction than directional strategies.
+
+**~400 lines** — `src/schwabagent/strategies/pairs.py`
 
 ---
 
@@ -166,22 +185,23 @@ Run alongside the agent: `./run.sh web` starts uvicorn on port 5000.
 
 | Feature | Reason skipped |
 |---------|----------------|
-| Android automation | Not applicable to equity trading |
-| Full hermes gateway/MCP | Too heavyweight; only messaging and memory are useful |
-| Blockchain/Solana tools | Out of scope |
-| Polymarket prediction market data | Low priority; LLM macro overlay covers this use case |
-| Full skills hub | Unnecessary complexity for a focused trading agent |
+| Full hermes/prowler gateway | Too heavyweight — only Telegram alerting is needed |
+| Browser-based scrapers (earnings, dividends) | Fragile Selenium automation; prefer API data |
+| Crypto / Polymarket integration | Out of scope for Schwab agent |
+| Android automation | Not applicable |
+| Full MCP server | Unnecessary complexity |
 
 ---
 
-## Dependency additions (when each phase lands)
+## Dependency additions by phase
 
 | Phase | New dependencies |
 |-------|-----------------|
-| 1 — Alerts | `python-telegram-bot` or `telebot`, optional `discord.py` |
+| 1 — Streaming | schwab-py streaming (built-in) |
 | 1 — Scheduler | `croniter` |
-| 1 — Earnings | already have `yfinance` via rebalancer pattern; add if not present |
-| 2 — SQLite | stdlib `sqlite3` only |
-| 3 — Backtest | `vectorbt` or plain pandas |
-| 3 — Webhook | `aiohttp` |
-| 4 — Dashboard | `fastapi`, `uvicorn`, `jinja2` (already in pyproject.toml) |
+| 2 — Earnings | `yfinance` (or Schwab fundamentals only) |
+| 2 — Intermarket | none (numpy/pandas only) |
+| 3 — Backtest | none (or `vectorbt` for advanced) |
+| 3 — Optimizer | `pypfopt` |
+| 4 — SQLite | stdlib `sqlite3` |
+| 5 — Dashboard | `jinja2` (fastapi/uvicorn already in deps) |

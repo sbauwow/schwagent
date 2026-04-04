@@ -1,4 +1,4 @@
-"""Risk management — position limits, exposure cap, drawdown kill switch."""
+"""Risk management — position limits, exposure cap, drawdown kill switch, trading rules."""
 from __future__ import annotations
 
 import logging
@@ -7,16 +7,19 @@ from datetime import datetime, timezone
 from schwabagent.config import Config
 from schwabagent.persistence import StateStore
 from schwabagent.schwab_client import AccountSummary
+from schwabagent.trading_rules import TradingRules
 
 logger = logging.getLogger(__name__)
 
 
 class RiskManager:
-    """Enforces per-position limits, total exposure cap, and drawdown kill switch."""
+    """Enforces per-position limits, total exposure cap, drawdown kill switch,
+    and brokerage trading rules (PDT, wash sale, etc.)."""
 
     def __init__(self, config: Config, state: StateStore):
         self.config = config
         self.state = state
+        self.trading_rules = TradingRules(config, state)
         self._killed = False
         self._kill_reason = ""
         self._peak_value: float = 0.0
@@ -27,6 +30,7 @@ class RiskManager:
             "max_position_value": config.MAX_POSITION_VALUE,
             "max_total_exposure": config.MAX_TOTAL_EXPOSURE,
             "max_drawdown_pct": config.MAX_DRAWDOWN_PCT,
+            "account_type": config.ACCOUNT_TYPE,
             "dry_run": config.DRY_RUN,
         })
 
@@ -126,6 +130,52 @@ class RiskManager:
                 f"Insufficient cash: need ${order_value:.2f}, have ${account.cash_available:.2f}"
             )
 
+        # Brokerage trading rules (PDT, wash sale, closing-only, etc.)
+        allowed, reason = self.trading_rules.check_order(
+            symbol=symbol,
+            side="BUY",
+            quantity=quantity,
+            price=price,
+            account_value=account.total_value,
+            account_type=account.account_type or self.config.ACCOUNT_TYPE,
+            round_trips=account.round_trips,
+            is_day_trader=account.is_day_trader,
+            is_closing_only=account.is_closing_only,
+        )
+        if not allowed:
+            return False, reason
+
+        return True, ""
+
+    def can_sell(
+        self,
+        symbol: str,
+        quantity: int,
+        price: float,
+        account: AccountSummary,
+    ) -> tuple[bool, str]:
+        """Check whether a sell order is allowed under trading rules.
+
+        Returns:
+            (allowed, reason)
+        """
+        if self._killed:
+            return False, f"Kill switch active: {self._kill_reason}"
+
+        allowed, reason = self.trading_rules.check_order(
+            symbol=symbol,
+            side="SELL",
+            quantity=quantity,
+            price=price,
+            account_value=account.total_value,
+            account_type=account.account_type or self.config.ACCOUNT_TYPE,
+            round_trips=account.round_trips,
+            is_day_trader=account.is_day_trader,
+            is_closing_only=account.is_closing_only,
+        )
+        if not allowed:
+            return False, reason
+
         return True, ""
 
     # ── Trade recording ───────────────────────────────────────────────────────
@@ -189,7 +239,14 @@ class RiskManager:
 
     # ── Status ────────────────────────────────────────────────────────────────
 
-    def status(self) -> dict:
+    def status(self, account: AccountSummary | None = None) -> dict:
+        rules_status = self.trading_rules.status(
+            account_value=account.total_value if account else 0.0,
+            account_type=account.account_type if account else self.config.ACCOUNT_TYPE,
+            round_trips=account.round_trips if account else 0,
+            is_day_trader=account.is_day_trader if account else False,
+            is_closing_only=account.is_closing_only if account else False,
+        )
         return {
             "killed": self._killed,
             "kill_reason": self._kill_reason,
@@ -199,4 +256,5 @@ class RiskManager:
             "max_position_value": self.config.MAX_POSITION_VALUE,
             "max_total_exposure": self.config.MAX_TOTAL_EXPOSURE,
             "dry_run": self.config.DRY_RUN,
+            "trading_rules": rules_status,
         }

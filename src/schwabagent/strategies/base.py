@@ -65,6 +65,11 @@ class Strategy(ABC):
         """Act on a single opportunity. Returns a trade result dict or None."""
         ...
 
+    @property
+    def is_live(self) -> bool:
+        """Whether this strategy is enabled for live trading."""
+        return self.config.is_strategy_live(self.name)
+
     def run_once(self) -> list[dict]:
         """Run one scan→execute cycle. Returns list of executed trade results."""
         if self.risk.is_killed():
@@ -76,11 +81,15 @@ class Strategy(ABC):
             logger.error("[%s] scan() failed: %s", self.name, e)
             return []
 
+        if not self.is_live and not self.config.DRY_RUN:
+            logger.info("[%s] live trading disabled for this strategy — dry-run only", self.name)
+
         results = []
         for opp in opportunities:
             if self.risk.is_killed():
                 break
             try:
+                opp["_force_dry_run"] = not self.is_live
                 result = self.execute(opp)
                 if result:
                     self.trades_executed += 1
@@ -107,6 +116,17 @@ class Strategy(ABC):
         }
 
     # ── Shared helpers ────────────────────────────────────────────────────────
+
+    def _should_execute(self, opportunity: dict | None = None) -> bool:
+        """Return True if this strategy should place real orders.
+
+        Checks both the global DRY_RUN flag and the per-strategy live toggle.
+        """
+        if self.config.DRY_RUN:
+            return False
+        if opportunity and opportunity.get("_force_dry_run"):
+            return False
+        return self.is_live
 
     def _fetch_ohlcv(self, symbol: str, days: int = 100) -> pd.DataFrame | None:
         """Fetch OHLCV, logging a warning if insufficient data is returned."""

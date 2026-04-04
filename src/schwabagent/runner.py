@@ -18,6 +18,7 @@ from schwabagent.strategies.base import Strategy
 from schwabagent.strategies.composite import CompositeStrategy
 from schwabagent.strategies.etf_rotation import ETFRotationStrategy
 from schwabagent.strategies.mean_reversion import MeanReversionStrategy
+from schwabagent.strategies.etf_scalp import ETFScalpStrategy
 from schwabagent.strategies.momentum import MomentumStrategy
 from schwabagent.strategies.trend_following import TrendFollowingStrategy
 
@@ -36,6 +37,7 @@ class AgentRunner:
         self.risk = RiskManager(config, self.state)
         self.client = self._init_client()
         self.llm = self._init_llm()
+        self.telegram = self._init_telegram()
         self.strategies: list[Strategy] = self._build_strategies()
 
     # ── Initialization ────────────────────────────────────────────────────────
@@ -59,6 +61,88 @@ class AgentRunner:
             )
             return None
         return llm
+
+    def _init_telegram(self):
+        """Initialize Telegram bot if enabled."""
+        if not self.config.TELEGRAM_ENABLED:
+            return None
+        from schwabagent.telegram import TelegramBot
+        bot = TelegramBot(self.config)
+        self._register_telegram_commands(bot)
+        bot.start()
+        return bot
+
+    def _register_telegram_commands(self, bot) -> None:
+        """Register bot command handlers that return MarkdownV2 text."""
+        from schwabagent.telegram import _escape_md
+
+        def _status_handler() -> str:
+            try:
+                account = self._get_account()
+                risk = self.risk.status(account=account)
+                tr = risk.get("trading_rules", {})
+                lines = [
+                    "*Schwab Agent Status*\n",
+                    f"Account: `{account.account_number}` \\({tr.get('account_type', '?')}\\)",
+                    f"Value: ${account.total_value:,.2f}",
+                    f"Cash: ${account.cash_available:,.2f}",
+                    f"Positions: {len(account.positions)}",
+                    f"Kill switch: {'YES' if risk['killed'] else 'no'}",
+                    f"DRY\\_RUN: {self.config.DRY_RUN}",
+                ]
+                return "\n".join(lines)
+            except Exception as e:
+                return f"*Error:* `{_escape_md(str(e))}`"
+
+        def _pnl_handler() -> str:
+            try:
+                summary = self.get_pnl_summary()
+                if not summary:
+                    return "No P&L data yet\\."
+                lines = ["*P&L Summary*\n"]
+                total = 0.0
+                for strat, data in sorted(summary.items()):
+                    pnl = data.get("realized_pnl", 0)
+                    trades = data.get("trades", 0)
+                    wr = data.get("win_rate", 0)
+                    total += pnl
+                    sign = "\\+" if pnl >= 0 else ""
+                    lines.append(f"`{_escape_md(strat)}` {sign}${pnl:,.2f} \\({trades}t, {wr:.0f}%\\)")
+                sign = "\\+" if total >= 0 else ""
+                lines.append(f"\n*Total: {sign}${total:,.2f}*")
+                return "\n".join(lines)
+            except Exception as e:
+                return f"*Error:* `{_escape_md(str(e))}`"
+
+        def _positions_handler() -> str:
+            try:
+                account = self._get_account()
+                if not account.positions:
+                    return "No open positions\\."
+                lines = ["*Current Positions*\n"]
+                for p in account.positions:
+                    pnl_str = f"${p.unrealized_pnl:+,.2f}" if p.unrealized_pnl else ""
+                    lines.append(
+                        f"`{_escape_md(p.symbol)}` {p.quantity:.0f} shares "
+                        f"@ ${p.avg_price:,.2f} {_escape_md(pnl_str)}"
+                    )
+                return "\n".join(lines)
+            except Exception as e:
+                return f"*Error:* `{_escape_md(str(e))}`"
+
+        def _kill_handler() -> str:
+            self.risk.kill("Manual kill via Telegram")
+            return "*Kill switch activated\\.* All trading halted\\."
+
+        def _resume_handler() -> str:
+            self.risk.unkill()
+            return "*Kill switch cleared\\.* Trading may resume\\."
+
+        bot.register_command("status", _status_handler)
+        bot.register_command("pnl", _pnl_handler)
+        bot.register_command("positions", _positions_handler)
+        bot.register_command("kill", _kill_handler)
+        bot.register_command("resume", _resume_handler)
 
     def _init_client(self) -> SchwabClient:
         client = SchwabClient(self.config)
@@ -86,6 +170,8 @@ class AgentRunner:
             strategies.append(TrendFollowingStrategy(self.client, self.config, self.risk, self.state))
         if "composite" in enabled:
             strategies.append(CompositeStrategy(self.client, self.config, self.risk, self.state))
+        if "etf_scalp" in enabled:
+            strategies.append(ETFScalpStrategy(self.client, self.config, self.risk, self.state))
 
         if not strategies:
             logger.warning("No strategies loaded — check STRATEGIES in .env")
@@ -115,11 +201,26 @@ class AgentRunner:
             )
         return accounts[0]
 
+    def _get_scalp_account(self) -> AccountSummary | None:
+        """Fetch the scalp-specific account if configured, else return None."""
+        scalp_hash = self.config.SCALP_ACCOUNT_HASH
+        if not scalp_hash:
+            return None
+        return self.client.get_account_summary(scalp_hash)
+
     def _inject_account(self, account: AccountSummary) -> None:
-        """Push the current account object into every strategy."""
+        """Push the current account object into every strategy.
+
+        The scalp strategy gets its own account if SCALP_ACCOUNT_HASH is set.
+        """
+        scalp_account = self._get_scalp_account()
+
         for s in self.strategies:
             if hasattr(s, "set_account"):
-                s.set_account(account)
+                if isinstance(s, ETFScalpStrategy) and scalp_account:
+                    s.set_account(scalp_account)
+                else:
+                    s.set_account(account)
 
     # ── run_once ─────────────────────────────────────────────────────────────
 
@@ -132,6 +233,11 @@ class AgentRunner:
             self.console.print(
                 f"[red]Kill switch triggered: drawdown={drawdown:.1f}%[/red]"
             )
+            if self.telegram:
+                self.telegram.send_kill_switch_alert(
+                    f"Drawdown {drawdown:.1f}% exceeded limit "
+                    f"{self.config.MAX_DRAWDOWN_PCT}%"
+                )
             return []
 
         self._inject_account(account)
@@ -142,9 +248,14 @@ class AgentRunner:
                 break
             try:
                 trades = strategy.run_once()
+                for t in trades:
+                    if self.telegram:
+                        self.telegram.send_trade_alert(t)
                 all_trades.extend(trades)
             except Exception as e:
                 logger.error("Strategy %s failed: %s", strategy.name, e)
+                if self.telegram:
+                    self.telegram.send_error(f"Strategy {strategy.name}: {e}")
 
         return all_trades
 
@@ -277,13 +388,30 @@ class AgentRunner:
         self.console.print(table)
 
     def _print_status(self) -> None:
-        risk = self.risk.status()
+        try:
+            account = self._get_account()
+        except Exception:
+            account = None
+        risk = self.risk.status(account=account)
         self.console.print(
             f"\n  [bold]Risk:[/bold] "
             f"peak=${risk['peak_value']:,.2f}  "
             f"max_dd={risk['max_drawdown_pct']}%  "
             f"killed={'[red]YES[/red]' if risk['killed'] else '[green]no[/green]'}"
         )
+        tr = risk.get("trading_rules", {})
+        acct_type = tr.get("account_type", "?")
+        self.console.print(f"  [bold]Account:[/bold] type={acct_type}")
+        if tr.get("is_closing_only"):
+            self.console.print("  [red bold]CLOSING ONLY — new buys blocked by Schwab[/red bold]")
+        if tr.get("pdt_applies"):
+            remaining = tr.get("round_trips_remaining", "?")
+            used = tr.get("round_trips", 0)
+            color = "red" if remaining == 0 else "yellow" if remaining == 1 else "green"
+            self.console.print(
+                f"  [bold]PDT:[/bold] [{color}]{used}/3 day trades used[/{color}] "
+                f"({remaining} remaining — from Schwab roundTrips)"
+            )
 
         table = Table(title="Strategy Session Stats", show_lines=False)
         table.add_column("Strategy", style="cyan")

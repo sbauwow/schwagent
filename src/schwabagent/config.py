@@ -11,14 +11,19 @@ class Config(BaseSettings):
         extra="ignore",
     )
 
-    # ── Schwab credentials ────────────────────────────────────────────────
+    # ── Schwab credentials — Account/Trading API ───────────────────────
     SCHWAB_API_KEY: str = ""
     SCHWAB_APP_SECRET: str = ""
     SCHWAB_TOKEN_PATH: str = "~/.schwab-agent/token.json"
-    # Callback URL registered in Schwab developer portal (must match exactly)
     SCHWAB_CALLBACK_URL: str = "https://127.0.0.1"
     # If empty, the agent will use the first account returned by the API
     SCHWAB_ACCOUNT_HASH: str = ""
+
+    # ── Schwab credentials — Market Data API ─────────────────────────
+    SCHWAB_MARKET_API_KEY: str = ""
+    SCHWAB_MARKET_APP_SECRET: str = ""
+    SCHWAB_MARKET_TOKEN_PATH: str = "~/.schwab-agent/market_token.json"
+    SCHWAB_MARKET_CALLBACK_URL: str = "https://127.0.0.1"
 
     # ── Watchlist / strategies ────────────────────────────────────────────
     WATCHLIST: str = "AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,UNH"
@@ -52,9 +57,53 @@ class Config(BaseSettings):
     MIN_ORDER_VALUE: float = 100.0    # minimum order size in $
     MAX_ORDER_VALUE: float = 2000.0   # maximum single order in $
 
+    # ── Per-strategy live trading toggle ──────────────────────────────
+    # Each strategy must be explicitly enabled for live trading.
+    # Even with DRY_RUN=false / --live, a strategy with its flag set to
+    # false will remain in dry-run mode.
+    LIVE_ETF_ROTATION: bool = False
+    LIVE_MOMENTUM: bool = False
+    LIVE_MEAN_REVERSION: bool = False
+    LIVE_TREND_FOLLOWING: bool = False
+    LIVE_COMPOSITE: bool = False
+    LIVE_ETF_SCALP: bool = False
+
+    # ── Account type ──────────────────────────────────────────────────
+    # "margin" or "cash" — affects PDT rule enforcement
+    ACCOUNT_TYPE: str = "margin"
+
+    # ── Multi-account ────────────────────────────────────────────────
+    # Account hash for the scalp strategy (separate from SCHWAB_ACCOUNT_HASH)
+    # Leave empty to use the same account as other strategies
+    SCALP_ACCOUNT_HASH: str = ""
+
+    # ── ETF Scalp strategy ───────────────────────────────────────────
+    # Liquid broad ETFs only — no restricted issuer, no leveraged, no inverse
+    SCALP_UNIVERSE: str = "SPY,QQQ,IWM,DIA,EFA,EEM,TLT,IEF,GLD,VNQ"
+    SCALP_INTERVAL_MINUTES: int = 3           # bar size for signals
+    SCALP_TAKE_PROFIT_PCT: float = 0.15       # +0.15% take profit
+    SCALP_STOP_LOSS_PCT: float = 0.10         # -0.10% stop loss
+    SCALP_TIME_STOP_MINUTES: int = 30         # close if no exit hit in N min
+    SCALP_SESSION_START: str = "09:33"        # skip first 3 min of chaos
+    SCALP_SESSION_END: str = "15:45"          # close all 15 min before close
+    SCALP_TRANCHES: int = 5                   # split capital into N tranches
+    SCALP_MAX_POSITIONS: int = 3              # max simultaneous open positions
+    SCALP_VOLUME_SPIKE_MULT: float = 2.0      # volume > N × 20-bar avg
+    SCALP_LOOKBACK_BARS: int = 3              # breakout lookback (prior N bars)
+    SCALP_EMA_FAST: int = 9                   # fast EMA for trend filter
+    SCALP_EMA_SLOW: int = 21                  # slow EMA for trend filter
+    SCALP_SCAN_INTERVAL_SECONDS: int = 15     # how often to check for entries
+
     # ── State / logging ───────────────────────────────────────────────────
     STATE_DIR: str = "~/.schwab-agent"
     LOG_LEVEL: str = "INFO"
+
+    # ── Telegram ──────────────────────────────────────────────────────────
+    TELEGRAM_ENABLED: bool = False
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""           # your user/group chat ID
+    TELEGRAM_REQUIRE_APPROVAL: bool = True  # require approval for live trades
+    TELEGRAM_APPROVAL_TIMEOUT: int = 300    # seconds to wait for approval
 
     # ── LLM (optional) ───────────────────────────────────────────────────
     LLM_ENABLED: bool = False
@@ -88,6 +137,38 @@ class Config(BaseSettings):
     @property
     def etf_momentum_periods(self) -> list[int]:
         return [int(p.strip()) for p in self.ETF_MOMENTUM_PERIODS.split(",") if p.strip()]
+
+    _STRATEGY_LIVE_FLAGS: dict[str, str] = {
+        "etf_rotation": "LIVE_ETF_ROTATION",
+        "momentum": "LIVE_MOMENTUM",
+        "mean_reversion": "LIVE_MEAN_REVERSION",
+        "trend_following": "LIVE_TREND_FOLLOWING",
+        "composite": "LIVE_COMPOSITE",
+        "etf_scalp": "LIVE_ETF_SCALP",
+    }
+
+    @property
+    def scalp_universe(self) -> list[str]:
+        blocked = self.etf_blocklist
+        return [
+            s.strip().upper()
+            for s in self.SCALP_UNIVERSE.split(",")
+            if s.strip() and s.strip().upper() not in blocked
+        ]
+
+    def is_strategy_live(self, strategy_name: str) -> bool:
+        """Check if a strategy is enabled for live trading.
+
+        Returns True only when BOTH:
+        1. Global DRY_RUN is False (i.e. --live mode)
+        2. The per-strategy LIVE_<name> flag is True
+        """
+        if self.DRY_RUN:
+            return False
+        attr = self._STRATEGY_LIVE_FLAGS.get(strategy_name)
+        if attr is None:
+            return False
+        return bool(getattr(self, attr, False))
 
     @property
     def dry_run(self) -> bool:

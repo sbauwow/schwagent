@@ -1,8 +1,8 @@
 # schwab-agent
 
-Automated equity and ETF trading agent for Charles Schwab. Connects via `schwab-py` OAuth2, scans a configurable watchlist with multiple quantitative strategies, and places orders through the Schwab API.
+Automated equity and ETF trading agent for Charles Schwab. Connects via dual OAuth2 apps (account + market data), scans a configurable watchlist with multiple quantitative strategies, and places orders through the Schwab Trader API.
 
-**`DRY_RUN=true` is the default** — no real orders until you explicitly pass `--live`.
+**`DRY_RUN=true` is the default.** Each strategy also has its own `LIVE_<name>=false` toggle. No real orders are placed until both layers are explicitly enabled.
 
 ---
 
@@ -16,12 +16,12 @@ uv sync
 
 # Configure
 cp .env.example .env
-$EDITOR .env   # set SCHWAB_API_KEY and SCHWAB_APP_SECRET at minimum
+$EDITOR .env   # set Schwab credentials at minimum
 
-# Authenticate (opens browser for Schwab OAuth on first run)
-./run.sh status
+# Authenticate — opens browser for OAuth
+./run.sh enroll
 
-# Dry-run scan — see signals, no trades placed
+# Dry-run scan — see signals, no trades
 ./run.sh scan
 ```
 
@@ -31,45 +31,88 @@ $EDITOR .env   # set SCHWAB_API_KEY and SCHWAB_APP_SECRET at minimum
 
 | Command | Description |
 |---------|-------------|
-| `./run.sh status` | Check Schwab connectivity, config, and Ollama |
-| `./run.sh scan` | Scan watchlist — show signals and ETF rankings, no trades |
+| `./run.sh enroll` | Authenticate with Schwab (OAuth browser flow) |
+| `./run.sh status` | Check connectivity, config, balances, per-strategy live flags |
+| `./run.sh scan` | Scan watchlist + ETF universe, show signals — no trades |
 | `./run.sh once` | Dry-run one full scan + execute cycle |
 | `./run.sh loop` | Dry-run continuous loop (interval from `.env`) |
 | `./run.sh live` | **Live trading** — real orders, requires confirmation |
 | `./run.sh pnl` | Show realized P&L by strategy |
+| `./run.sh pf AAPL` | Point & Figure chart (powered by pypf + Schwab data) |
+
+### Point & Figure charts
+
+```bash
+./run.sh pf SPY                        # default: 1% box, 3-box reversal, 1yr chart
+./run.sh pf AAPL -b 0.02 -r 2         # 2% box, 2-box reversal
+./run.sh pf QQQ -d 0.5 -p 1           # 6-month chart, 1yr data
+./run.sh pf GLD --no-style --meta      # plain output + JSON metadata
+```
+
+---
+
+## Dual API architecture
+
+Schwab exposes two separate API products requiring separate app registrations:
+
+| API | Purpose | Config keys |
+|-----|---------|-------------|
+| **Trader API** | Accounts, positions, balances, orders | `SCHWAB_API_KEY`, `SCHWAB_APP_SECRET` |
+| **Market Data API** | Quotes, price history, options chains | `SCHWAB_MARKET_API_KEY`, `SCHWAB_MARKET_APP_SECRET` |
+
+Each has its own OAuth token (`token.json` / `market_token.json`). The `enroll` command lets you authenticate each separately.
 
 ---
 
 ## Configuration
 
-All settings live in `.env`. Copy `.env.example` for the full reference.
+All settings live in `.env`. See `.env.example` for the full reference.
+
+### Schwab credentials
 
 ```bash
-# Schwab — get from developer.schwab.com → My Apps
+# Account/Trading API — from developer.schwab.com → My Apps
 SCHWAB_API_KEY=
 SCHWAB_APP_SECRET=
-SCHWAB_CALLBACK_URL=https://127.0.0.1   # must match your app's redirect URI
+SCHWAB_CALLBACK_URL=https://127.0.0.1:8182/auth/callback
 
-# Strategies to run (comma-separated)
-STRATEGIES=etf_rotation,momentum,mean_reversion,trend_following,composite
-
-# Symbols scanned by momentum/mean_reversion/trend_following strategies
-WATCHLIST=AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,UNH
-
-# Risk limits
-MAX_TOTAL_EXPOSURE=50000.0   # hard cap on total $ deployed
-MAX_POSITION_VALUE=5000.0    # max $ per single position
-MAX_DRAWDOWN_PCT=15.0        # kill switch at -15% drawdown from peak
-
-# Safety
-DRY_RUN=true                 # set false or use ./run.sh live for real orders
+# Market Data API — separate app registration
+SCHWAB_MARKET_API_KEY=
+SCHWAB_MARKET_APP_SECRET=
+SCHWAB_MARKET_CALLBACK_URL=https://127.0.0.1:8182/auth/callback
 ```
+
+### Multi-account
+
+The default `SCHWAB_ACCOUNT_HASH` is used for daily strategies. The scalp strategy can target a separate account:
+
+```bash
+SCHWAB_ACCOUNT_HASH=           # default account (leave empty for first)
+SCALP_ACCOUNT_HASH=            # separate account for scalp strategy
+```
+
+### Two-layer safety model
+
+**Layer 1 — Global:** `DRY_RUN=true` is the master switch. Nothing trades when on.
+
+**Layer 2 — Per-strategy:** Even with `DRY_RUN=false` (via `./run.sh live`), each strategy must be individually enabled:
+
+```bash
+LIVE_ETF_ROTATION=false
+LIVE_MOMENTUM=false
+LIVE_MEAN_REVERSION=false
+LIVE_TREND_FOLLOWING=false
+LIVE_COMPOSITE=false
+LIVE_ETF_SCALP=false
+```
+
+A strategy only places real orders when **both** layers allow it.
 
 ---
 
 ## Strategies
 
-### ETF Rotation (`etf_rotation`) — primary
+### ETF Rotation (`etf_rotation`)
 
 Dual momentum rotation across a configurable ETF universe. Holds the top-N ETFs by momentum score and rotates out of laggards.
 
@@ -84,26 +127,28 @@ Dual momentum rotation across a configurable ETF universe. Holds the top-N ETFs 
 
 **Bear-market filter** — if SPY falls below its 200-day SMA, all risky positions are sold and the portfolio rotates entirely to `ETF_SAFE_HAVEN` (default: `SHY`).
 
-**Position sizing** — equal weight: `portfolio_value / ETF_TOP_N`, clipped to risk limits.
+**LLM overlay** — when `LLM_ENABLED=true`, the local Ollama model provides a macro confidence score (0-1) that scales position size for top-ranked ETFs.
 
-**LLM overlay** — when `LLM_ENABLED=true`, the local Ollama model provides a macro confidence score (0–1) that scales position size for top-ranked ETFs.
+### ETF Scalp (`etf_scalp`)
 
-**restricted issuer blocklist** — all restricted issuer ETFs are excluded by default via `ETF_BLOCKLIST`. They can never appear in the universe even if added to `ETF_UNIVERSE`.
+Intraday scalping on liquid ETFs. Designed for cash accounts with $200k+ capital.
 
-ETF rotation config:
+**Entry** — requires all three:
+1. Volume spike: bar volume > 2x the 20-bar average
+2. Price breakout: close > high of prior 3 bars
+3. Trend filter: EMA(9) > EMA(21) and price > VWAP
 
-```bash
-ETF_UNIVERSE=SPY,QQQ,IWM,EFA,EEM,TLT,IEF,HYG,TIP,GLD,VNQ,SHY
-ETF_TOP_N=3                  # hold top 3 ETFs at any time
-ETF_MOMENTUM_PERIODS=1,3,6,12
-ETF_SAFE_HAVEN=SHY           # cash-equivalent ETF for bear market
-ETF_BEAR_FILTER=true
-ETF_BLOCKLIST=MINT,LDUR,SMUR,HYIN,ZROZ,BOND,PDBC,HYLS,LOWV,EMPW,MUNI,INFU,PFFD,REGL
-```
+**Exit** — first condition hit wins:
+- +0.15% take profit
+- -0.10% stop loss
+- 30 min time stop
+- 15:45 ET session close
+
+**Capital management** — splits capital into 5 tranches for T+1 settlement management. Max 3 concurrent positions. Uses 3-minute bars aggregated from 1-minute Schwab data.
 
 ### Momentum (`momentum`)
 
-SMA(20/50) + RSI(14) + MACD. Buys when price is above both moving averages with confirming RSI and positive MACD histogram. Sells into weakness.
+SMA(20/50) + RSI(14) + MACD. Buys when price is above both moving averages with confirming RSI and positive MACD histogram.
 
 ### Mean Reversion (`mean_reversion`)
 
@@ -117,28 +162,64 @@ EMA(20/50/200) alignment + ADX(14). Requires strong trend confirmation (ADX > 25
 
 Runs Momentum, Mean Reversion, and Trend Following simultaneously and averages their scores. Only trades when the consensus is clear.
 
-| Score | Signal |
-|-------|--------|
-| ≥ 1.5 | STRONG_BUY |
-| ≥ 0.5 | BUY |
-| > −0.5 | HOLD |
-| > −1.5 | SELL |
-| ≤ −1.5 | STRONG_SELL |
+### Writing new strategies
+
+Copy `src/schwabagent/strategies/TEMPLATE.py` — it includes a 10-question design checklist and a wiring checklist for the files you need to update.
 
 ---
 
-## Local LLM support
+## Trading rules engine
 
-The agent optionally uses a local [Ollama](https://ollama.com) model to add macro commentary and a confidence modifier to ETF rotation signals.
+Brokerage constraints are auto-enforced using data from the Schwab API:
+
+| Rule | Source | Behavior |
+|------|--------|----------|
+| **PDT** (Pattern Day Trader) | `securitiesAccount.roundTrips`, `isDayTrader` | Blocks day trade #4 on margin accounts < $25k |
+| **Closing-only** | `isClosingOnlyRestricted` | Blocks all new BUY orders |
+| **Wash sale** | Trade history (30-day lookback) | Warns but allows (tax implication only) |
+
+Account type (`CASH` / `MARGIN`) is auto-detected from the API. PDT does not apply to cash accounts.
+
+---
+
+## Telegram integration
+
+Push alerts and interactive trade management via Telegram bot.
+
+### Setup
+
+1. Create a bot via [@BotFather](https://t.me/BotFather)
+2. Get your chat ID via [@userinfobot](https://t.me/userinfobot)
+3. Configure in `.env`:
 
 ```bash
-LLM_ENABLED=true
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:14b-instruct-q5_K_M
-OLLAMA_TIMEOUT=60
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+TELEGRAM_CHAT_ID=your_numeric_id
+TELEGRAM_REQUIRE_APPROVAL=true
+TELEGRAM_APPROVAL_TIMEOUT=300
 ```
 
-When enabled, the top-N ETF candidates are sent to the model with their momentum rank and return history. The model returns a `confidence` (0–1) that scales the target position size — high conviction increases allocation, low conviction reduces it. The agent runs fine with `LLM_ENABLED=false`.
+### Alerts (agent → you)
+
+- Trade executed (symbol, side, qty, price, P&L, strategy)
+- Kill switch triggered
+- Daily P&L summary
+- Agent errors
+
+### Bot commands (you → agent)
+
+| Command | Description |
+|---------|-------------|
+| `/status` | Account value, cash, positions, kill switch |
+| `/pnl` | P&L by strategy with win rates |
+| `/positions` | Current holdings with unrealized P&L |
+| `/kill` | Activate kill switch remotely |
+| `/resume` | Clear kill switch |
+
+### Trade approval
+
+When `TELEGRAM_REQUIRE_APPROVAL=true`, live trades show **Approve** / **Reject** inline buttons. The agent blocks until you respond or the timeout expires (default 5 min). Unapproved trades are not executed.
 
 ---
 
@@ -153,7 +234,19 @@ When enabled, the top-N ETF candidates are sent to the model with their momentum
 | Order size floor | `MIN_ORDER_VALUE` | $100 |
 | Order size ceiling | `MAX_ORDER_VALUE` | $2,000 |
 
-The kill switch permanently halts all execution until manually cleared from `~/.schwab-agent/risk_state.json`.
+The kill switch halts all execution until manually cleared from Telegram (`/resume`) or by editing `~/.schwab-agent/risk_state.json`.
+
+---
+
+## Local LLM support
+
+Optional [Ollama](https://ollama.com) integration for macro commentary on ETF rotation signals.
+
+```bash
+LLM_ENABLED=true
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:14b-instruct-q5_K_M
+```
 
 ---
 
@@ -163,7 +256,8 @@ All state is persisted in `~/.schwab-agent/`:
 
 | File | Contents |
 |------|----------|
-| `token.json` | Schwab OAuth token (chmod 0600) |
+| `token.json` | Schwab Account API OAuth token (chmod 0600) |
+| `market_token.json` | Schwab Market Data API OAuth token |
 | `risk_state.json` | Peak portfolio value, kill-switch status |
 | `trade_history.jsonl` | One trade record per line |
 | `strategy_pnl.json` | Per-strategy cumulative P&L, win rate |
@@ -171,14 +265,33 @@ All state is persisted in `~/.schwab-agent/`:
 
 ---
 
-## Schwab app setup
+## Project structure
 
-1. Go to [developer.schwab.com](https://developer.schwab.com) → My Apps → Create App
-2. Set the callback/redirect URL to `https://127.0.0.1` (or whatever you set in `SCHWAB_CALLBACK_URL`)
-3. Copy the API key and app secret into `.env`
-4. Run `./run.sh status` — it will open a browser for OAuth on first run, then save `~/.schwab-agent/token.json`
-
-The token refreshes automatically. If it expires, delete `~/.schwab-agent/token.json` and re-run `./run.sh status`.
+```
+src/schwabagent/
+  config.py           Configuration (pydantic-settings, loaded from .env)
+  schwab_client.py    Schwab API wrapper (dual client: account + market)
+  runner.py           Main orchestrator (scan → execute loop)
+  risk.py             Risk management + trading rules integration
+  trading_rules.py    Brokerage rules engine (PDT, wash sale, closing-only)
+  persistence.py      JSON/JSONL state storage
+  indicators.py       Technical indicators (SMA, EMA, RSI, MACD, etc.)
+  telegram.py         Telegram bot (alerts, commands, trade approval)
+  pf.py               Point & Figure charting (pypf + Schwab data)
+  llm.py              Ollama LLM client
+  cli.py              CLI entry point
+  strategies/
+    base.py           Abstract strategy interface + Signal enum
+    TEMPLATE.py       Strategy template with design checklist
+    etf_rotation.py   Dual momentum ETF rotation
+    etf_scalp.py      Intraday ETF scalping (volume/price breakout)
+    momentum.py       SMA/RSI/MACD momentum
+    mean_reversion.py Bollinger Bands mean reversion
+    trend_following.py EMA alignment + ADX trend
+    composite.py      Multi-strategy consensus
+docs/
+  schwab-api-reference.md   Full Schwab API field reference
+```
 
 ---
 
@@ -187,5 +300,5 @@ The token refreshes automatically. If it expires, delete `~/.schwab-agent/token.
 ```bash
 uv sync --dev
 uv run pytest          # run tests
-uv run pytest -v       # verbose
+uv run ruff check src  # lint
 ```
