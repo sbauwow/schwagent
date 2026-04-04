@@ -63,25 +63,7 @@ Behaviour:
 
 ## Phase 2 — Visibility and auditability
 
-### 4. Web dashboard
-**Source:** `rebalancer/app/portfolio/` + `app/market/`
-
-Minimal FastAPI + Jinja2 dashboard at `http://localhost:5000`.
-
-Pages:
-- `/` — current positions, cash, total value, unrealized P&L
-- `/etf` — ETF rotation rankings table (rank, score, 1m/3m/6m/12m returns, signal, LLM commentary)
-- `/signals` — latest scan results per strategy
-- `/pnl` — realized P&L by strategy, win rate, trade count
-- `/risk` — risk state, drawdown from peak, kill switch status
-
-Run alongside the agent: `./run.sh web` starts uvicorn on port 5000.
-
-**~400 lines** — `src/schwabagent/web/`
-
----
-
-### 5. SQLite audit trail
+### 4. SQLite audit trail
 **Source:** `hermes-agent/hermes_state.py`
 
 Replace current JSONL files with a queryable SQLite database at `~/.schwab-agent/agent.db`.
@@ -104,7 +86,7 @@ Existing JSONL files kept as backup during migration.
 
 ---
 
-### 6. Persistent strategy memory
+### 5. Persistent strategy memory
 **Source:** `hermes-agent/tools/memory_tool.py`
 
 Markdown file at `~/.schwab-agent/memory.md` where the agent accumulates notes across runs.
@@ -123,7 +105,7 @@ Human-editable — add your own notes and the agent will respect them.
 
 ## Phase 3 — Validation and robustness
 
-### 7. Backtesting framework
+### 6. Backtesting framework
 **Source:** Build from scratch (nothing to copy)
 
 Walk-forward replay of any strategy against historical OHLCV pulled via the Schwab API or yfinance.
@@ -142,7 +124,7 @@ Output: markdown report + CSV of all simulated trades.
 
 ---
 
-### 8. Webhook receiver
+### 7. Webhook receiver
 **Source:** `hermes-agent/gateway/platforms/webhook.py`
 
 Lightweight aiohttp server (separate from the web dashboard) that accepts HTTP POST triggers.
@@ -157,6 +139,26 @@ Useful for integrating external volatility monitors, TradingView alerts, or a mo
 HMAC signature validation on all routes.
 
 **~250 lines** — `src/schwabagent/webhook.py`
+
+---
+
+## Phase 4 — Interface
+
+### 8. Web dashboard
+**Source:** `rebalancer/app/portfolio/` + `app/market/`
+
+Minimal FastAPI + Jinja2 dashboard at `http://localhost:5000`.
+
+Pages:
+- `/` — current positions, cash, total value, unrealized P&L
+- `/etf` — ETF rotation rankings table (rank, score, 1m/3m/6m/12m returns, signal, LLM commentary)
+- `/signals` — latest scan results per strategy
+- `/pnl` — realized P&L by strategy, win rate, trade count
+- `/risk` — risk state, drawdown from peak, kill switch status
+
+Run alongside the agent: `./run.sh web` starts uvicorn on port 5000.
+
+**~400 lines** — `src/schwabagent/web/`
 
 ---
 
@@ -179,7 +181,7 @@ HMAC signature validation on all routes.
 | 1 — Alerts | `python-telegram-bot` or `telebot`, optional `discord.py` |
 | 1 — Scheduler | `croniter` |
 | 1 — Earnings | already have `yfinance` via rebalancer pattern; add if not present |
-| 2 — Dashboard | `fastapi`, `uvicorn`, `jinja2` (already in pyproject.toml) |
 | 2 — SQLite | stdlib `sqlite3` only |
 | 3 — Backtest | `vectorbt` or plain pandas |
 | 3 — Webhook | `aiohttp` |
+| 4 — Dashboard | `fastapi`, `uvicorn`, `jinja2` (already in pyproject.toml) |
