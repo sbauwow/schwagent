@@ -80,20 +80,46 @@ class SchwabClient:
         try:
             if token_path.exists():
                 self._client = schwab.auth.client_from_token_file(
-                    api_key, app_secret, str(token_path)
+                    token_path=str(token_path),
+                    api_key=api_key,
+                    app_secret=app_secret,
                 )
                 logger.info("Authenticated from token file: %s", token_path)
-            else:
-                # Interactive OAuth — opens browser
-                logger.info("No token file found at %s — starting OAuth flow", token_path)
-                from schwab.auth import client_from_login_flow  # type: ignore
-                self._client = client_from_login_flow(
-                    api_key,
-                    app_secret,
-                    "https://127.0.0.1",
-                    str(token_path),
-                )
-                logger.info("OAuth complete — token saved to %s", token_path)
+                return True
+        except Exception as e:
+            logger.warning("Token file load failed (%s) — starting fresh OAuth flow", e)
+            token_path.unlink(missing_ok=True)
+
+        # Interactive OAuth flow — opens browser, then prompts for callback URL
+        callback_url = self.config.SCHWAB_CALLBACK_URL
+        logger.info("No valid token — starting OAuth flow (callback: %s)", callback_url)
+        try:
+            import webbrowser
+
+            ctx = schwab.auth.get_auth_context(api_key, callback_url)
+            print(f"\nOpen this URL to authorize:\n  {ctx.authorization_url}\n")
+            webbrowser.open(ctx.authorization_url)
+            received = input(
+                "After authorizing, paste the full redirect URL here:\n> "
+            ).strip()
+
+            def _write_token(token: dict) -> None:
+                import json as _json
+                token_path.write_text(_json.dumps(token))
+                try:
+                    token_path.chmod(0o600)
+                except OSError:
+                    pass
+                logger.info("Token saved to %s", token_path)
+
+            self._client = schwab.auth.client_from_received_url(
+                api_key=api_key,
+                app_secret=app_secret,
+                auth_context=ctx,
+                received_url=received,
+                token_write_func=_write_token,
+            )
+            logger.info("OAuth complete")
             return True
         except Exception as e:
             logger.error("Authentication failed: %s", e)

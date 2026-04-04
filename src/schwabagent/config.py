@@ -15,13 +15,30 @@ class Config(BaseSettings):
     SCHWAB_API_KEY: str = ""
     SCHWAB_APP_SECRET: str = ""
     SCHWAB_TOKEN_PATH: str = "~/.schwab-agent/token.json"
+    # Callback URL registered in Schwab developer portal (must match exactly)
+    SCHWAB_CALLBACK_URL: str = "https://127.0.0.1"
     # If empty, the agent will use the first account returned by the API
     SCHWAB_ACCOUNT_HASH: str = ""
 
     # ── Watchlist / strategies ────────────────────────────────────────────
     WATCHLIST: str = "AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,UNH"
-    STRATEGIES: str = "momentum,mean_reversion,trend_following,composite"
+    STRATEGIES: str = "etf_rotation,momentum,mean_reversion,trend_following,composite"
     SCAN_INTERVAL_SECONDS: int = 300
+
+    # ── ETF rotation strategy ─────────────────────────────────────────────
+    # Comma-separated ETF universe for the rotation strategy
+    ETF_UNIVERSE: str = "SPY,QQQ,IWM,EFA,EEM,TLT,IEF,HYG,TIP,GLD,VNQ,SHY"
+    # Hold top N ETFs at any time
+    ETF_TOP_N: int = 3
+    # Lookback periods (months) used for momentum scoring
+    ETF_MOMENTUM_PERIODS: str = "1,3,6,12"
+    # If SPY is below its SMA200, move to safe-haven ETF
+    ETF_SAFE_HAVEN: str = "SHY"
+    # Bear market filter: True = enable SPY/SMA200 check
+    ETF_BEAR_FILTER: bool = True
+    # ETFs to permanently exclude regardless of universe setting
+    # Includes all restricted issuer ETFs by default
+    ETF_BLOCKLIST: str = "MINT,LDUR,SMUR,HYIN,ZROZ,BOND,PDBC,HYLS,LOWV,EMPW,MUNI,INFU,PFFD,REGL"
 
     # ── Risk ──────────────────────────────────────────────────────────────
     MAX_POSITION_PCT: float = 0.10       # max 10% of portfolio per position
@@ -43,6 +60,7 @@ class Config(BaseSettings):
     LLM_ENABLED: bool = False
     OLLAMA_HOST: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5:14b-instruct-q5_K_M"
+    OLLAMA_TIMEOUT: int = 60
 
     # ── Derived properties ────────────────────────────────────────────────
 
@@ -53,6 +71,23 @@ class Config(BaseSettings):
     @property
     def strategies(self) -> list[str]:
         return [s.strip().lower() for s in self.STRATEGIES.split(",") if s.strip()]
+
+    @property
+    def etf_blocklist(self) -> set[str]:
+        return {s.strip().upper() for s in self.ETF_BLOCKLIST.split(",") if s.strip()}
+
+    @property
+    def etf_universe(self) -> list[str]:
+        blocked = self.etf_blocklist
+        return [
+            s.strip().upper()
+            for s in self.ETF_UNIVERSE.split(",")
+            if s.strip() and s.strip().upper() not in blocked
+        ]
+
+    @property
+    def etf_momentum_periods(self) -> list[int]:
+        return [int(p.strip()) for p in self.ETF_MOMENTUM_PERIODS.split(",") if p.strip()]
 
     @property
     def dry_run(self) -> bool:

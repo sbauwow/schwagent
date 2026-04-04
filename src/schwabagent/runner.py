@@ -16,6 +16,7 @@ from schwabagent.risk import RiskManager
 from schwabagent.schwab_client import AccountSummary, SchwabClient
 from schwabagent.strategies.base import Strategy
 from schwabagent.strategies.composite import CompositeStrategy
+from schwabagent.strategies.etf_rotation import ETFRotationStrategy
 from schwabagent.strategies.mean_reversion import MeanReversionStrategy
 from schwabagent.strategies.momentum import MomentumStrategy
 from schwabagent.strategies.trend_following import TrendFollowingStrategy
@@ -34,9 +35,30 @@ class AgentRunner:
         self.state = StateStore(config.STATE_DIR)
         self.risk = RiskManager(config, self.state)
         self.client = self._init_client()
+        self.llm = self._init_llm()
         self.strategies: list[Strategy] = self._build_strategies()
 
     # ── Initialization ────────────────────────────────────────────────────────
+
+    def _init_llm(self):
+        """Initialise Ollama client if LLM_ENABLED, else return None."""
+        if not self.config.LLM_ENABLED:
+            return None
+        from schwabagent.llm import OllamaClient
+        llm = OllamaClient(
+            host=self.config.OLLAMA_HOST,
+            model=self.config.OLLAMA_MODEL,
+            timeout=self.config.OLLAMA_TIMEOUT,
+        )
+        if llm.is_available():
+            logger.info("LLM enabled: %s @ %s", self.config.OLLAMA_MODEL, self.config.OLLAMA_HOST)
+        else:
+            logger.warning(
+                "LLM_ENABLED=true but Ollama not reachable at %s — disabling LLM overlay",
+                self.config.OLLAMA_HOST,
+            )
+            return None
+        return llm
 
     def _init_client(self) -> SchwabClient:
         client = SchwabClient(self.config)
@@ -52,6 +74,10 @@ class AgentRunner:
         enabled = set(self.config.strategies)
         strategies: list[Strategy] = []
 
+        if "etf_rotation" in enabled:
+            strategies.append(ETFRotationStrategy(
+                self.client, self.config, self.risk, self.state, llm=self.llm
+            ))
         if "momentum" in enabled:
             strategies.append(MomentumStrategy(self.client, self.config, self.risk, self.state))
         if "mean_reversion" in enabled:
@@ -165,6 +191,10 @@ class AgentRunner:
 
         mode = "DRY RUN" if self.config.DRY_RUN else "LIVE"
         self.console.rule(f"[bold green]Schwab Agent Started ({mode})[/bold green]")
+        etf_strat = next((s for s in self.strategies if isinstance(s, ETFRotationStrategy)), None)
+        if etf_strat:
+            self.console.print(f"  ETF universe: {', '.join(self.config.etf_universe)}")
+            self.console.print(f"  Top N: {self.config.ETF_TOP_N}  Bear filter: {self.config.ETF_BEAR_FILTER}")
         self.console.print(f"  Watchlist : {', '.join(self.config.watchlist)}")
         self.console.print(f"  Strategies: {', '.join(s.name for s in self.strategies)}")
         self.console.print(f"  Interval  : {interval}s")
