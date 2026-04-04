@@ -1,0 +1,33 @@
+[project]
+name = "schwab-agent"
+version = "0.1.0"
+description = "Automated equity trading agent for Charles Schwab with multiple quantitative strategies"
+requires-python = ">=3.11"
+dependencies = [
+    "schwab-py>=1.4.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+    "requests>=2.31.0",
+    "httpx>=0.25.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+]
+
+[project.scripts]
+schwab-agent = "schwabagent.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+]
+
+[tool.ruff]
+line-length = 100
