@@ -18,6 +18,7 @@ from schwabagent.strategies.base import Strategy
 from schwabagent.strategies.composite import CompositeStrategy
 from schwabagent.strategies.etf_rotation import ETFRotationStrategy
 from schwabagent.strategies.mean_reversion import MeanReversionStrategy
+from schwabagent.strategies.conviction_hold import ConvictionHoldStrategy
 from schwabagent.strategies.etf_scalp import ETFScalpStrategy
 from schwabagent.strategies.momentum import MomentumStrategy
 from schwabagent.strategies.trend_following import TrendFollowingStrategy
@@ -256,6 +257,8 @@ class AgentRunner:
             strategies.append(CompositeStrategy(self.client, self.config, self.risk, self.state))
         if "etf_scalp" in enabled:
             strategies.append(ETFScalpStrategy(self.client, self.config, self.risk, self.state))
+        if "conviction_hold" in enabled:
+            strategies.append(ConvictionHoldStrategy(self.client, self.config, self.risk, self.state))
 
         if not strategies:
             logger.warning("No strategies loaded — check STRATEGIES in .env")

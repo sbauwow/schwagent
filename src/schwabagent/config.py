@@ -75,6 +75,7 @@ class Config(BaseSettings):
     LIVE_TREND_FOLLOWING: bool = False
     LIVE_COMPOSITE: bool = False
     LIVE_ETF_SCALP: bool = False
+    LIVE_CONVICTION_HOLD: bool = False
 
     # ── Auto-tune (self-improvement loop) ────────────────────────────
     AUTOTUNE_ENABLED: bool = True
@@ -96,6 +97,11 @@ class Config(BaseSettings):
     # Account hash for the scalp strategy (separate from SCHWAB_ACCOUNT_HASH)
     # Leave empty to use the same account as other strategies
     SCALP_ACCOUNT_HASH: str = ""
+
+    # ── Conviction Hold strategy ─────────────────────────────────────
+    CONVICTION_SYMBOLS: str = "RKLB,LUNR,ASTS,RDW,MNTS,BKSY,PLTR,PATH,AI,BBAI,IONQ,RGTI,QUBT"
+    CONVICTION_HOLD_DAYS: int = 30
+    CONVICTION_MAX_POSITION: float = 10000.0
 
     # ── ETF Scalp strategy ───────────────────────────────────────────
     # Liquid broad ETFs only — no restricted issuer, no leveraged, no inverse
@@ -170,6 +176,7 @@ class Config(BaseSettings):
         syms.update(self.trend_following_symbols)
         syms.update(self.etf_universe)
         syms.update(self.scalp_universe)
+        syms.update(self.conviction_symbols)
         return sorted(syms)
 
     @property
@@ -200,7 +207,12 @@ class Config(BaseSettings):
         "trend_following": "LIVE_TREND_FOLLOWING",
         "composite": "LIVE_COMPOSITE",
         "etf_scalp": "LIVE_ETF_SCALP",
+        "conviction_hold": "LIVE_CONVICTION_HOLD",
     }
+
+    @property
+    def conviction_symbols(self) -> list[str]:
+        return [s.strip().upper() for s in self.CONVICTION_SYMBOLS.split(",") if s.strip()]
 
     @property
     def scalp_universe(self) -> list[str]:

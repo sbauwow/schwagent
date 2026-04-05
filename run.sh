@@ -131,7 +131,7 @@ cmd_status() {
     echo -e "    LLM          = $(grep '^LLM_ENABLED' .env 2>/dev/null | cut -d= -f2)"
     echo ""
     echo -e "  Live trading by strategy:"
-    for STRAT in ETF_ROTATION MOMENTUM MEAN_REVERSION TREND_FOLLOWING COMPOSITE ETF_SCALP; do
+    for STRAT in ETF_ROTATION MOMENTUM MEAN_REVERSION TREND_FOLLOWING COMPOSITE ETF_SCALP CONVICTION_HOLD; do
         VAL=$(grep "^LIVE_${STRAT}" .env 2>/dev/null | cut -d= -f2)
         if [ "$VAL" = "true" ]; then
             echo -e "    LIVE_${STRAT} = ${GREEN}true${NC}"
