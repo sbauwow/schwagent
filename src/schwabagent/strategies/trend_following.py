@@ -211,14 +211,14 @@ class TrendFollowingStrategy(Strategy):
     ) -> Signal:
         has_200 = not math.isnan(ema200)
 
-        # STRONG_BUY: full bull alignment + strong trend
-        if has_200 and ema20 > ema50 > ema200 and adx_val > 25:
+        # STRONG_BUY: full bull alignment + strong trend (ADX>35 from parameter sweep)
+        if has_200 and ema20 > ema50 > ema200 and adx_val > 35:
             return Signal.STRONG_BUY
-        # BUY: short-term bull with moderate trend
-        if ema20 > ema50 and adx_val > 20:
+        # BUY: short-term bull with confirmed trend
+        if ema20 > ema50 and adx_val > 30:
             return Signal.BUY
         # STRONG_SELL: full bear alignment + strong trend
-        if has_200 and ema20 < ema50 < ema200 and adx_val > 25:
+        if has_200 and ema20 < ema50 < ema200 and adx_val > 35:
             return Signal.STRONG_SELL
         # SELL: short-term bear
         if ema20 < ema50:

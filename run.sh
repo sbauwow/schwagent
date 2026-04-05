@@ -252,6 +252,36 @@ print()
 " 2>/dev/null
 }
 
+cmd_backtest() {
+    STRATEGY="${2:-all}"
+    START="${3:-2020-01-01}"
+    END="${4:-2025-12-31}"
+    echo ""
+    echo -e "${CYAN}=== Backtesting: ${STRATEGY} (${START} → ${END}) ===${NC}"
+    echo ""
+
+    $VENV -c "
+from schwabagent.backtest import Backtester, BacktestConfig
+
+symbols = ['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','JPM','V','UNH']
+strategies = ['${STRATEGY}'] if '${STRATEGY}' != 'all' else ['momentum','mean_reversion','trend_following','composite']
+
+for strat in strategies:
+    config = BacktestConfig(
+        strategy=strat,
+        symbols=symbols,
+        start='${START}',
+        end='${END}',
+        initial_capital=100000,
+        data_path='data/sp500_stocks.csv',
+    )
+    bt = Backtester(config)
+    result = bt.run()
+    result.print_report()
+    print()
+"
+}
+
 cmd_feedback() {
     DAYS="${2:-30}"
     $VENV -c "
@@ -393,8 +423,9 @@ case "${1:-once}" in
     pf)      cmd_pf "$@" ;;
     skills)  cmd_skills ;;
     feedback) cmd_feedback "$@" ;;
+    backtest) cmd_backtest "$@" ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -406,5 +437,6 @@ case "${1:-once}" in
         echo "  pf       Point & Figure chart (e.g. ./run.sh pf AAPL)"
         echo "  skills   List available skills"
         echo "  feedback Show signal accuracy, calibration, and drift alerts"
+        echo "  backtest Run strategy backtest (e.g. ./run.sh backtest momentum 2020-01-01 2024-12-31)"
         ;;
 esac
