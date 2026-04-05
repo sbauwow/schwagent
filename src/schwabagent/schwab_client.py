@@ -10,8 +10,13 @@ from typing import Any
 import pandas as pd
 
 from schwabagent.config import Config
+from schwabagent.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
+
+# Shared rate limiter — one per API (account + market may share the same limit)
+_account_limiter = RateLimiter(max_calls=120, window=60.0)
+_market_limiter = RateLimiter(max_calls=120, window=60.0)
 
 
 # ── Data models ────────────────────────────────────────────────────────────────
@@ -222,11 +227,18 @@ class SchwabClient:
             raise RuntimeError("Market client not authenticated — call authenticate() first")
         return self._market_client
 
+    @staticmethod
+    def _throttle(limiter: RateLimiter) -> None:
+        """Block until a rate limit slot is available."""
+        if not limiter.acquire(block=True, timeout=30.0):
+            raise RuntimeError("API rate limit exceeded — could not acquire slot in 30s")
+
     # ── Account ───────────────────────────────────────────────────────────────
 
     def get_all_accounts(self) -> list[AccountSummary]:
         """Return a summary for every account linked to these credentials."""
         client = self._require_client()
+        self._throttle(_account_limiter)
         try:
             resp = client.get_accounts(fields=[client.Account.Fields.POSITIONS])
             resp.raise_for_status()
@@ -246,6 +258,7 @@ class SchwabClient:
     def get_account_summary(self, account_hash: str) -> AccountSummary | None:
         """Return summary for a specific account hash."""
         client = self._require_client()
+        self._throttle(_account_limiter)
         try:
             resp = client.get_account(
                 account_hash,
@@ -312,6 +325,7 @@ class SchwabClient:
         if not symbols:
             return {}
         client = self._require_market_client()
+        self._throttle(_market_limiter)
         try:
             resp = client.get_quotes(symbols)
             resp.raise_for_status()
@@ -345,6 +359,7 @@ class SchwabClient:
         indexed by date (DatetimeIndex, UTC).
         """
         client = self._require_market_client()
+        self._throttle(_market_limiter)
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=days + 30)  # buffer for weekends/holidays
 
@@ -397,6 +412,7 @@ class SchwabClient:
         indexed by datetime (DatetimeIndex, US/Eastern).
         """
         client = self._require_market_client()
+        self._throttle(_market_limiter)
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=days + 1)  # buffer for weekends
 
@@ -471,6 +487,7 @@ class SchwabClient:
             Dict with order details and status.
         """
         client = self._require_client()
+        self._throttle(_account_limiter)
         try:
             import schwab.orders.equities as eq  # type: ignore
         except ImportError:
@@ -513,6 +530,7 @@ class SchwabClient:
     def cancel_order(self, account_hash: str, order_id: str) -> bool:
         """Cancel an open order. Returns True on success."""
         client = self._require_client()
+        self._throttle(_account_limiter)
         try:
             resp = client.cancel_order(account_hash, order_id)
             resp.raise_for_status()
@@ -522,9 +540,18 @@ class SchwabClient:
             logger.error("cancel_order(%s) failed: %s", order_id, e)
             return False
 
+    @staticmethod
+    def rate_limit_stats() -> dict:
+        """Return rate limiter stats for both API clients."""
+        return {
+            "account_api": _account_limiter.stats(),
+            "market_api": _market_limiter.stats(),
+        }
+
     def get_open_orders(self, account_hash: str) -> list[dict]:
         """Return all open orders for an account."""
         client = self._require_client()
+        self._throttle(_account_limiter)
         try:
             resp = client.get_orders_for_account(
                 account_hash,

@@ -17,6 +17,7 @@ dependencies = [
     "uvicorn>=0.24.0",
     "pypf>=0.9.6",
     "python-telegram-bot>=22.6,<23",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]

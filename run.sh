@@ -252,6 +252,88 @@ print()
 " 2>/dev/null
 }
 
+cmd_feedback() {
+    DAYS="${2:-30}"
+    $VENV -c "
+from schwabagent.config import Config
+from schwabagent.feedback import FeedbackLoop
+
+fb = FeedbackLoop(Config())
+
+# Strategy summary
+summary = fb.get_strategy_summary(days=${DAYS})
+if not summary:
+    print('  No signal data yet. Run scans to populate.')
+    exit(0)
+
+print()
+print(f'  Signal Feedback — last ${DAYS} days')
+print()
+print(f'  {\"Strategy\":<22} {\"Signals\":>8} {\"Resolved\":>9} {\"Wins\":>6} {\"Losses\":>7} {\"Win%\":>6} {\"Avg P&L\":>10} {\"Total P&L\":>11}')
+print('  ' + '-' * 88)
+for strat, d in sorted(summary.items()):
+    total = d['total_signals']
+    resolved = d['resolved'] or 0
+    wins = d['wins'] or 0
+    losses = d['losses'] or 0
+    wr = wins / resolved * 100 if resolved > 0 else 0
+    avg = d['avg_pnl'] or 0
+    total_pnl = d['total_pnl'] or 0
+    print(f'  {strat:<22} {total:>8} {resolved:>9} {wins:>6} {losses:>7} {wr:>5.1f}% {avg:>+10.2f} {total_pnl:>+11.2f}')
+print()
+
+# Drift alerts
+alerts = fb.get_drift_alerts(days=7)
+if alerts:
+    print('  Drift Alerts (last 7 days):')
+    for a in alerts:
+        print(f'    [{a[\"alert_level\"].upper()}] {a[\"strategy\"]}: {a[\"metric\"]} '
+              f'baseline={a[\"baseline_value\"]:.1f} → current={a[\"current_value\"]:.1f} '
+              f'({a[\"deviation_pct\"]:+.1f}%)')
+    print()
+
+# Calibration
+print('  Calibration by signal type:')
+cal = fb.calibrate_all(days=${DAYS})
+for strat, signals in sorted(cal.items()):
+    if not signals:
+        continue
+    print(f'    {strat}:')
+    for sig, c in sorted(signals.items()):
+        if c['total'] < 3:
+            continue
+        pf = f'{c[\"profit_factor\"]:.2f}' if c['profit_factor'] != float('inf') else 'inf'
+        print(f'      {sig:<14} n={c[\"total\"]:>4}  wr={c[\"win_rate\"]:>5.1f}%  pf={pf:>6}  avg=\${c[\"avg_pnl\"]:>+8.2f}')
+    print()
+"
+}
+
+cmd_skills() {
+    $VENV -c "
+from schwabagent.skills import SkillsManager
+
+mgr = SkillsManager()
+skills = mgr.list_skills()
+
+if not skills:
+    print('  No skills found in ~/.schwab-agent/skills/')
+    exit(0)
+
+# Group by category
+cats = {}
+for s in skills:
+    cats.setdefault(s.category or '(uncategorized)', []).append(s)
+
+for cat, items in sorted(cats.items()):
+    print(f'\n  {cat}/')
+    for s in items:
+        tags = ', '.join(s.tags[:3]) if s.tags else ''
+        tag_str = f'  [{tags}]' if tags else ''
+        print(f'    {s.name:<24} {s.description[:60]}{tag_str}')
+print()
+"
+}
+
 cmd_pf() {
     SYMBOL="${2:-SPY}"
     shift 2 2>/dev/null || shift 1 2>/dev/null || true
@@ -309,8 +391,10 @@ case "${1:-once}" in
     live)    cmd_live ;;
     pnl)     cmd_pnl ;;
     pf)      cmd_pf "$@" ;;
+    skills)  cmd_skills ;;
+    feedback) cmd_feedback "$@" ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -320,5 +404,7 @@ case "${1:-once}" in
         echo "  live     REAL MONEY mode — places actual orders"
         echo "  pnl      Show realized P&L by strategy"
         echo "  pf       Point & Figure chart (e.g. ./run.sh pf AAPL)"
+        echo "  skills   List available skills"
+        echo "  feedback Show signal accuracy, calibration, and drift alerts"
         ;;
 esac

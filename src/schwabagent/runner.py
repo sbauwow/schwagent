@@ -38,6 +38,7 @@ class AgentRunner:
         self.client = self._init_client()
         self.llm = self._init_llm()
         self.telegram = self._init_telegram()
+        self.feedback = self._init_feedback()
         self.strategies: list[Strategy] = self._build_strategies()
 
     # ── Initialization ────────────────────────────────────────────────────────
@@ -61,6 +62,11 @@ class AgentRunner:
             )
             return None
         return llm
+
+    def _init_feedback(self):
+        """Initialize the ML feedback loop."""
+        from schwabagent.feedback import FeedbackLoop
+        return FeedbackLoop(self.config)
 
     def _init_telegram(self):
         """Initialize Telegram bot if enabled."""
@@ -249,6 +255,9 @@ class AgentRunner:
             try:
                 trades = strategy.run_once()
                 for t in trades:
+                    # Record to feedback loop
+                    if t.get("side") == "SELL":
+                        self.feedback.resolve_from_trade(t)
                     if self.telegram:
                         self.telegram.send_trade_alert(t)
                 all_trades.extend(trades)
@@ -271,15 +280,21 @@ class AgentRunner:
         self._inject_account(account)
 
         seen: dict[str, dict] = {}
+        all_signals: list[dict] = []
         for strategy in self.strategies:
             try:
                 opps = strategy.scan()
+                all_signals.extend(opps)
                 for opp in opps:
                     sym = opp["symbol"]
                     if sym not in seen or abs(opp["score"]) > abs(seen[sym]["score"]):
                         seen[sym] = opp
             except Exception as e:
                 logger.error("Strategy %s scan failed: %s", strategy.name, e)
+
+        # Record all signals to feedback loop
+        if all_signals:
+            self.feedback.record_batch(all_signals)
 
         return sorted(seen.values(), key=lambda o: abs(o["score"]), reverse=True)
 

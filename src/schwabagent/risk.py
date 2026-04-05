@@ -237,6 +237,86 @@ class RiskManager:
 
         return True, drawdown_pct
 
+    # ── Price anomaly detection ────────────────────────────────────────────
+
+    _price_history: dict[str, list[float]] = {}
+    _ANOMALY_WINDOW = 20
+    _ANOMALY_THRESHOLD = 0.15  # 15% deviation from rolling average
+
+    def check_price_anomaly(self, symbol: str, price: float) -> bool:
+        """Flag if price deviates significantly from recent history.
+
+        Returns True if anomaly detected (caller should skip or warn).
+        """
+        if price <= 0:
+            return True
+
+        history = self._price_history.setdefault(symbol, [])
+        if len(history) >= 5:
+            avg = sum(history[-5:]) / 5
+            if avg > 0:
+                deviation = abs(price - avg) / avg
+                if deviation > self._ANOMALY_THRESHOLD:
+                    logger.warning(
+                        "Price anomaly: %s price=$%.2f vs avg=$%.2f (%.1f%% deviation)",
+                        symbol, price, avg, deviation * 100,
+                    )
+                    self.state.audit("price_anomaly", {
+                        "symbol": symbol, "price": price, "avg": avg,
+                        "deviation_pct": round(deviation * 100, 1),
+                    })
+                    return True
+
+        history.append(price)
+        if len(history) > self._ANOMALY_WINDOW:
+            self._price_history[symbol] = history[-self._ANOMALY_WINDOW:]
+        return False
+
+    # ── Position reconciliation ──────────────────────────────────────────
+
+    def reconcile_positions(
+        self,
+        expected: dict[str, float],
+        actual: list,
+    ) -> list[dict]:
+        """Compare expected positions (from local state) vs actual (from API).
+
+        Args:
+            expected: {symbol: expected_quantity} from trade history
+            actual: list of Position objects from account
+
+        Returns:
+            List of mismatches, each with symbol, expected, actual, delta.
+        """
+        actual_map = {p.symbol: p.quantity for p in actual if p.quantity != 0}
+        all_symbols = set(expected) | set(actual_map)
+        mismatches = []
+
+        for symbol in sorted(all_symbols):
+            exp_qty = expected.get(symbol, 0.0)
+            act_qty = actual_map.get(symbol, 0.0)
+            if abs(exp_qty - act_qty) > 0.001:  # tolerance for fractional shares
+                mismatch = {
+                    "symbol": symbol,
+                    "expected": exp_qty,
+                    "actual": act_qty,
+                    "delta": act_qty - exp_qty,
+                }
+                mismatches.append(mismatch)
+                logger.warning(
+                    "Position mismatch: %s expected=%.2f actual=%.2f delta=%.2f",
+                    symbol, exp_qty, act_qty, act_qty - exp_qty,
+                )
+
+        if mismatches:
+            self.state.audit("position_reconciliation", {
+                "mismatches": mismatches,
+                "total_expected": len(expected),
+                "total_actual": len(actual_map),
+            })
+
+        return mismatches
+
     # ── Status ────────────────────────────────────────────────────────────────
 
     def status(self, account: AccountSummary | None = None) -> dict:
