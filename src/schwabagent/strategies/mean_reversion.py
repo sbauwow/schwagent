@@ -45,9 +45,10 @@ class MeanReversionStrategy(Strategy):
 
     def scan(self) -> list[dict]:
         opportunities = []
-        quotes = self.client.get_quotes(self.config.watchlist)
+        universe = self.config.mean_reversion_symbols
+        quotes = self.client.get_quotes(universe)
 
-        for symbol in self.config.watchlist:
+        for symbol in universe:
             df = self._fetch_ohlcv(symbol)
             if df is None:
                 continue
@@ -83,7 +84,7 @@ class MeanReversionStrategy(Strategy):
         opportunities.sort(key=lambda o: abs(o["score"]), reverse=True)
         logger.info(
             "[mean_reversion] scan: %d symbols → %d opportunities",
-            len(self.config.watchlist), len(opportunities),
+            len(universe), len(opportunities),
         )
         return opportunities
 

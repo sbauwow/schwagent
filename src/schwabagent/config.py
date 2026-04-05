@@ -25,13 +25,21 @@ class Config(BaseSettings):
     SCHWAB_MARKET_TOKEN_PATH: str = "~/.schwab-agent/market_token.json"
     SCHWAB_MARKET_CALLBACK_URL: str = "https://127.0.0.1"
 
-    # ── Watchlist / strategies ────────────────────────────────────────────
-    WATCHLIST: str = "AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,UNH"
-    STRATEGIES: str = "etf_rotation,momentum,mean_reversion,trend_following,composite"
+    # ── Watchlist (monitoring — all symbols the agent tracks) ────────────
+    WATCHLIST: str = (
+        "AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,UNH,"
+        "SPY,QQQ,IWM,DIA,EFA,EEM,TLT,IEF,HYG,TIP,GLD,VNQ,SHY,"
+        "XLE,XOM,CVX,XLU,XLP,SLV,DBC"
+    )
+    STRATEGIES: str = "etf_rotation,momentum,mean_reversion,trend_following,composite,etf_scalp"
     SCAN_INTERVAL_SECONDS: int = 300
 
+    # ── Per-strategy symbol lists ─────────────────────────────────────────
+    MOMENTUM_SYMBOLS: str = "AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,UNH"
+    MEAN_REVERSION_SYMBOLS: str = "AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,UNH"
+    TREND_FOLLOWING_SYMBOLS: str = "AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA,JPM,V,UNH,XLE,XOM,CVX"
+
     # ── ETF rotation strategy ─────────────────────────────────────────────
-    # Comma-separated ETF universe for the rotation strategy
     ETF_UNIVERSE: str = "SPY,QQQ,IWM,EFA,EEM,TLT,IEF,HYG,TIP,GLD,VNQ,SHY"
     # Hold top N ETFs at any time
     ETF_TOP_N: int = 3
@@ -128,6 +136,29 @@ class Config(BaseSettings):
     @property
     def watchlist(self) -> list[str]:
         return [s.strip().upper() for s in self.WATCHLIST.split(",") if s.strip()]
+
+    @property
+    def momentum_symbols(self) -> list[str]:
+        return [s.strip().upper() for s in self.MOMENTUM_SYMBOLS.split(",") if s.strip()]
+
+    @property
+    def mean_reversion_symbols(self) -> list[str]:
+        return [s.strip().upper() for s in self.MEAN_REVERSION_SYMBOLS.split(",") if s.strip()]
+
+    @property
+    def trend_following_symbols(self) -> list[str]:
+        return [s.strip().upper() for s in self.TREND_FOLLOWING_SYMBOLS.split(",") if s.strip()]
+
+    @property
+    def all_symbols(self) -> list[str]:
+        """All unique symbols across watchlist and all strategy universes."""
+        syms = set(self.watchlist)
+        syms.update(self.momentum_symbols)
+        syms.update(self.mean_reversion_symbols)
+        syms.update(self.trend_following_symbols)
+        syms.update(self.etf_universe)
+        syms.update(self.scalp_universe)
+        return sorted(syms)
 
     @property
     def strategies(self) -> list[str]:

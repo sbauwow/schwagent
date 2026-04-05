@@ -45,9 +45,10 @@ class MomentumStrategy(Strategy):
 
     def scan(self) -> list[dict]:
         opportunities = []
-        quotes = self.client.get_quotes(self.config.watchlist)
+        universe = self.config.momentum_symbols
+        quotes = self.client.get_quotes(universe)
 
-        for symbol in self.config.watchlist:
+        for symbol in universe:
             df = self._fetch_ohlcv(symbol)
             if df is None:
                 continue
@@ -82,7 +83,7 @@ class MomentumStrategy(Strategy):
 
         # Sort by absolute score descending
         opportunities.sort(key=lambda o: abs(o["score"]), reverse=True)
-        logger.info("[momentum] scan: %d symbols → %d opportunities", len(self.config.watchlist), len(opportunities))
+        logger.info("[momentum] scan: %d symbols → %d opportunities", len(universe), len(opportunities))
         return opportunities
 
     # ── execute ───────────────────────────────────────────────────────────────

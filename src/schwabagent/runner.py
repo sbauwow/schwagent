@@ -108,10 +108,8 @@ class AgentRunner:
         """Initialize WebSocket streaming (optional — starts on demand)."""
         from schwabagent.streaming import StreamManager
         stream = StreamManager(self.config, self.client)
-        # Subscribe to all symbols across strategies
-        all_symbols = list(set(
-            self.config.watchlist + self.config.etf_universe + self.config.scalp_universe
-        ))
+        # Subscribe to all symbols across watchlist + all strategy universes
+        all_symbols = self.config.all_symbols
         stream.subscribe_quotes(all_symbols)
         stream.subscribe_account_activity(on_fill=self.order_tracker.handle_stream_fill)
         return stream

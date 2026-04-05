@@ -45,9 +45,10 @@ class TrendFollowingStrategy(Strategy):
 
     def scan(self) -> list[dict]:
         opportunities = []
-        quotes = self.client.get_quotes(self.config.watchlist)
+        universe = self.config.trend_following_symbols
+        quotes = self.client.get_quotes(universe)
 
-        for symbol in self.config.watchlist:
+        for symbol in universe:
             # Need 200+ trading days for EMA200 → ~310 calendar days
             df = self._fetch_ohlcv(symbol, days=400)
             if df is None or len(df) < 60:
@@ -87,7 +88,7 @@ class TrendFollowingStrategy(Strategy):
         opportunities.sort(key=lambda o: abs(o["score"]), reverse=True)
         logger.info(
             "[trend_following] scan: %d symbols → %d opportunities",
-            len(self.config.watchlist), len(opportunities),
+            len(universe), len(opportunities),
         )
         return opportunities
 

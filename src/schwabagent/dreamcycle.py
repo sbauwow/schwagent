@@ -180,10 +180,8 @@ class DreamCycle:
         runner = self._runner
         client = runner.client
 
-        # Combine all symbols from watchlist + ETF universe
-        all_symbols = list(set(
-            runner.config.watchlist + runner.config.etf_universe + runner.config.scalp_universe
-        ))
+        # All symbols across watchlist + all strategy universes
+        all_symbols = runner.config.all_symbols
 
         # Fetch quotes with fundamentals
         try:
