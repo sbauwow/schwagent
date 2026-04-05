@@ -282,6 +282,35 @@ for strat in strategies:
 "
 }
 
+cmd_dream() {
+    echo ""
+    echo -e "${CYAN}=== Dreamcycle — autonomous research cycle ===${NC}"
+    echo ""
+    $VENV -c "
+from schwabagent.config import Config
+from schwabagent.runner import AgentRunner
+
+config = Config()
+runner = AgentRunner(config)
+result = runner.dreamcycle.run_once()
+
+print(f'  Duration: {result.duration_seconds:.1f}s')
+print(f'  Phases OK: {result.phases_completed}')
+if result.phases_failed:
+    print(f'  Phases FAILED: {result.phases_failed}')
+print(f'  Signals recorded: {result.signals_recorded}')
+print(f'  Drift alerts: {result.drift_alerts}')
+print(f'  Auto-tune actions: {result.auto_tune_actions}')
+print(f'  Position mismatches: {result.position_mismatches}')
+print(f'  Digest sent: {result.digest_sent}')
+if result.errors:
+    print(f'  Errors:')
+    for e in result.errors:
+        print(f'    - {e}')
+print()
+"
+}
+
 cmd_feedback() {
     DAYS="${2:-30}"
     $VENV -c "
@@ -424,8 +453,9 @@ case "${1:-once}" in
     skills)  cmd_skills ;;
     feedback) cmd_feedback "$@" ;;
     backtest) cmd_backtest "$@" ;;
+    dream)   cmd_dream ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|dream]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -438,5 +468,6 @@ case "${1:-once}" in
         echo "  skills   List available skills"
         echo "  feedback Show signal accuracy, calibration, and drift alerts"
         echo "  backtest Run strategy backtest (e.g. ./run.sh backtest momentum 2020-01-01 2024-12-31)"
+        echo "  dream    Run one dreamcycle (autonomous research + calibration)"
         ;;
 esac

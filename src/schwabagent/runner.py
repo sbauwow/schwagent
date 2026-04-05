@@ -41,6 +41,7 @@ class AgentRunner:
         self.feedback = self._init_feedback()
         self.strategies: list[Strategy] = self._build_strategies()
         self.autotuner = self._init_autotuner()
+        self.dreamcycle = self._init_dreamcycle()
 
     # ── Initialization ────────────────────────────────────────────────────────
 
@@ -73,6 +74,11 @@ class AgentRunner:
         """Initialize the auto-tuner (after feedback and telegram are ready)."""
         from schwabagent.feedback import AutoTuner
         return AutoTuner(self.config, self.feedback, self.telegram)
+
+    def _init_dreamcycle(self):
+        """Initialize the dreamcycle (after everything else is ready)."""
+        from schwabagent.dreamcycle import DreamCycle
+        return DreamCycle(self)
 
     def _init_telegram(self):
         """Initialize Telegram bot if enabled."""
@@ -340,6 +346,9 @@ class AgentRunner:
         except ValueError:
             pass  # not in main thread
 
+        # Start dreamcycle in background (30-min interval)
+        self.dreamcycle.start(interval_minutes=30)
+
         mode = "DRY RUN" if self.config.DRY_RUN else "LIVE"
         self.console.rule(f"[bold green]Schwab Agent Started ({mode})[/bold green]")
         etf_strat = next((s for s in self.strategies if isinstance(s, ETFRotationStrategy)), None)
@@ -371,6 +380,7 @@ class AgentRunner:
                     break
                 time.sleep(1)
 
+        self.dreamcycle.stop()
         self.console.rule("[bold red]Schwab Agent Stopped[/bold red]")
         self._print_status()
 
