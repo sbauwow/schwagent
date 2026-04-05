@@ -48,8 +48,8 @@ class TrendFollowingStrategy(Strategy):
         quotes = self.client.get_quotes(self.config.watchlist)
 
         for symbol in self.config.watchlist:
-            # Need at least 200+ bars for EMA200
-            df = self._fetch_ohlcv(symbol, days=260)
+            # Need 200+ trading days for EMA200 → ~310 calendar days
+            df = self._fetch_ohlcv(symbol, days=400)
             if df is None or len(df) < 60:
                 continue
 

@@ -110,55 +110,68 @@ def adx(
     """Average Directional Index (0–100).
 
     Higher values indicate stronger trend (regardless of direction).
+    Uses Wilder's smoothing (RMA) for TR, +DM, -DM, and DX.
     """
     min_len = period * 2 + 1
     if len(close) < min_len:
         return float("nan")
 
-    # True Range
-    prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs(),
-    ], axis=1).max(axis=1)
+    h = high.values.astype(float)
+    l = low.values.astype(float)
+    c = close.values.astype(float)
+    n = len(c)
 
-    # Directional movement
-    up_move = high.diff()
-    down_move = (-low.diff())
+    # True Range, +DM, -DM — skip index 0 (needs previous bar)
+    tr = np.empty(n)
+    plus_dm = np.empty(n)
+    minus_dm = np.empty(n)
+    tr[0] = plus_dm[0] = minus_dm[0] = 0.0
 
-    plus_dm = pd.Series(
-        np.where((up_move > down_move) & (up_move > 0), up_move, 0.0),
-        index=close.index,
-    )
-    minus_dm = pd.Series(
-        np.where((down_move > up_move) & (down_move > 0), down_move, 0.0),
-        index=close.index,
-    )
+    for i in range(1, n):
+        hl = h[i] - l[i]
+        hc = abs(h[i] - c[i - 1])
+        lc = abs(l[i] - c[i - 1])
+        tr[i] = max(hl, hc, lc)
 
-    # Wilder smoothing
-    def wilder_smooth(series: pd.Series, n: int) -> pd.Series:
-        result = [float("nan")] * n
-        initial = float(series.iloc[1:n + 1].sum())
-        result.append(initial)
-        for i in range(n + 1, len(series)):
-            val = result[-1] - result[-1] / n + float(series.iloc[i])
-            result.append(val)
-        return pd.Series(result, index=series.index)
+        up = h[i] - h[i - 1]
+        down = l[i - 1] - l[i]
+        plus_dm[i] = up if up > down and up > 0 else 0.0
+        minus_dm[i] = down if down > up and down > 0 else 0.0
 
-    smoothed_tr = wilder_smooth(tr, period)
-    smoothed_plus = wilder_smooth(plus_dm, period)
-    smoothed_minus = wilder_smooth(minus_dm, period)
+    # Wilder smoothing for TR, +DM, -DM:
+    # Seed = SUM of first `period` values (indices 1..period).
+    # Then: smoothed[i] = smoothed[i-1] - smoothed[i-1]/period + value[i]
+    def wilder_sum(arr: np.ndarray, p: int) -> np.ndarray:
+        """Wilder smooth seeded with sum (for TR, DM)."""
+        out = np.full(n, np.nan)
+        out[p] = np.sum(arr[1:p + 1])
+        for i in range(p + 1, n):
+            out[i] = out[i - 1] - out[i - 1] / p + arr[i]
+        return out
 
-    plus_di = 100.0 * smoothed_plus / smoothed_tr.replace(0, float("nan"))
-    minus_di = 100.0 * smoothed_minus / smoothed_tr.replace(0, float("nan"))
+    smoothed_tr = wilder_sum(tr, period)
+    smoothed_plus = wilder_sum(plus_dm, period)
+    smoothed_minus = wilder_sum(minus_dm, period)
 
-    dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, float("nan"))
+    # +DI, -DI (0–100 range): DI = 100 * smoothed_DM / smoothed_TR
+    with np.errstate(divide="ignore", invalid="ignore"):
+        plus_di = np.where(smoothed_tr > 0, 100.0 * smoothed_plus / smoothed_tr, 0.0)
+        minus_di = np.where(smoothed_tr > 0, 100.0 * smoothed_minus / smoothed_tr, 0.0)
+        di_sum = plus_di + minus_di
+        dx = np.where(di_sum > 0, 100.0 * np.abs(plus_di - minus_di) / di_sum, 0.0)
 
-    # ADX = Wilder smooth of DX
-    adx_series = wilder_smooth(dx.fillna(0), period)
-    val = float(adx_series.iloc[-1])
-    return val if not np.isnan(val) else float("nan")
+    # ADX = Wilder smooth of DX, seeded with MEAN of first `period` valid DX values.
+    # DX is first valid at index `period` (where smoothed TR/DM become valid).
+    first_valid_dx = period
+    adx_seed_end = first_valid_dx + period
+    adx_vals = np.full(n, np.nan)
+    if adx_seed_end <= n:
+        adx_vals[adx_seed_end - 1] = np.mean(dx[first_valid_dx:adx_seed_end])
+        for i in range(adx_seed_end, n):
+            adx_vals[i] = (adx_vals[i - 1] * (period - 1) + dx[i]) / period
+
+    val = adx_vals[-1]
+    return float(val) if not np.isnan(val) else float("nan")
 
 
 def zscore(prices: pd.Series, period: int = 20) -> float:
