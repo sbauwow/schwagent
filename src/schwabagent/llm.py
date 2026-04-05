@@ -1,4 +1,14 @@
-"""Local LLM client — Ollama-backed probability and commentary generation."""
+"""Multi-provider LLM client — Ollama, Anthropic Claude, OpenAI-compatible.
+
+Switchable via LLM_PROVIDER in .env:
+  - "ollama"    — local Ollama (default, free)
+  - "anthropic" — Claude API (cloud, requires ANTHROPIC_API_KEY)
+  - "openai"    — OpenAI or any compatible endpoint (requires OPENAI_API_KEY)
+
+All providers expose the same interface: generate(prompt, system) → str.
+High-level helpers (etf_commentary, signal_commentary) work regardless
+of which backend is active.
+"""
 from __future__ import annotations
 
 import json
@@ -8,60 +18,180 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-class OllamaClient:
-    """Thin wrapper around the Ollama HTTP API.
+class LLMClient:
+    """Unified LLM client that routes to the configured provider."""
 
-    Used optionally by strategies to get macro commentary or probability
-    shading on top of quantitative signals.
-    """
-
-    def __init__(self, host: str = "http://localhost:11434", model: str = "qwen2.5:14b-instruct-q5_K_M", timeout: int = 60):
-        self.host = host.rstrip("/")
-        self.model = model
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "",
+        api_key: str = "",
+        base_url: str = "",
+        timeout: int = 60,
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+    ):
+        self.provider = provider.lower().strip()
         self.timeout = timeout
-        self._available: bool | None = None  # cached after first check
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self._available: bool | None = None
 
-    # ── Connectivity ──────────────────────────────────────────────────────────
+        # Provider-specific defaults
+        if self.provider == "ollama":
+            self.model = model or "qwen2.5:14b-instruct-q5_K_M"
+            self.base_url = (base_url or "http://localhost:11434").rstrip("/")
+            self.api_key = ""
+        elif self.provider == "anthropic":
+            self.model = model or "claude-sonnet-4-6"
+            self.base_url = (base_url or "https://api.anthropic.com").rstrip("/")
+            self.api_key = api_key
+        elif self.provider == "openai":
+            self.model = model or "gpt-4o-mini"
+            self.base_url = (base_url or "https://api.openai.com").rstrip("/")
+            self.api_key = api_key
+        else:
+            # Treat unknown providers as OpenAI-compatible
+            self.model = model or "gpt-4o-mini"
+            self.base_url = (base_url or "http://localhost:8000").rstrip("/")
+            self.api_key = api_key
+            self.provider = "openai"  # use OpenAI format
+
+    # ── Connectivity ─────────────────────────────────────────────────────
 
     def is_available(self) -> bool:
-        """Return True if Ollama is reachable and the model is loaded."""
+        """Check if the LLM backend is reachable."""
         if self._available is not None:
             return self._available
+
         try:
-            import httpx
-            r = httpx.get(f"{self.host}/api/tags", timeout=5)
-            models = [m["name"] for m in r.json().get("models", [])]
-            # Accept prefix match (e.g. "qwen2.5:14b" matches "qwen2.5:14b-instruct-q5_K_M")
-            self._available = any(self.model.split(":")[0] in m for m in models)
-        except Exception as e:
-            logger.debug("Ollama not reachable: %s", e)
+            if self.provider == "ollama":
+                self._available = self._check_ollama()
+            elif self.provider == "anthropic":
+                self._available = bool(self.api_key)
+            elif self.provider == "openai":
+                self._available = bool(self.api_key) or "localhost" in self.base_url
+            else:
+                self._available = False
+        except Exception:
             self._available = False
+
         return self._available
 
-    # ── Core generate ─────────────────────────────────────────────────────────
-
-    def _generate(self, prompt: str, system: str = "") -> str:
-        """Send a completion request and return the response text."""
+    def _check_ollama(self) -> bool:
         import httpx
+        try:
+            r = httpx.get(f"{self.base_url}/api/tags", timeout=5)
+            models = [m["name"] for m in r.json().get("models", [])]
+            return any(self.model.split(":")[0] in m for m in models)
+        except Exception:
+            return False
 
+    # ── Core generate ────────────────────────────────────────────────────
+
+    def generate(self, prompt: str, system: str = "", max_tokens: int | None = None) -> str:
+        """Send a completion request. Routes to the configured provider."""
+        if self.provider == "ollama":
+            return self._generate_ollama(prompt, system, max_tokens)
+        elif self.provider == "anthropic":
+            return self._generate_anthropic(prompt, system, max_tokens)
+        elif self.provider == "openai":
+            return self._generate_openai(prompt, system, max_tokens)
+        else:
+            raise ValueError(f"Unknown LLM provider: {self.provider}")
+
+    def _generate_ollama(self, prompt: str, system: str, max_tokens: int | None) -> str:
+        import httpx
         payload: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0.2, "num_predict": 300},
+            "options": {
+                "temperature": self.temperature,
+                "num_predict": max_tokens or self.max_tokens,
+            },
+        }
+        if system:
+            payload["system"] = system
+
+        r = httpx.post(f"{self.base_url}/api/generate", json=payload, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json().get("response", "").strip()
+
+    def _generate_anthropic(self, prompt: str, system: str, max_tokens: int | None) -> str:
+        import httpx
+        messages = [{"role": "user", "content": prompt}]
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens or self.max_tokens,
+            "temperature": self.temperature,
+            "messages": messages,
         }
         if system:
             payload["system"] = system
 
         r = httpx.post(
-            f"{self.host}/api/generate",
+            f"{self.base_url}/v1/messages",
             json=payload,
+            headers={
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
             timeout=self.timeout,
         )
         r.raise_for_status()
-        return r.json().get("response", "").strip()
+        data = r.json()
 
-    # ── High-level helpers ────────────────────────────────────────────────────
+        # Extract text from content blocks
+        content = data.get("content", [])
+        texts = [b.get("text", "") for b in content if b.get("type") == "text"]
+        return "\n".join(texts).strip()
+
+    def _generate_openai(self, prompt: str, system: str, max_tokens: int | None) -> str:
+        import httpx
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens or self.max_tokens,
+            "temperature": self.temperature,
+        }
+
+        headers = {"content-type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        r = httpx.post(
+            f"{self.base_url}/v1/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=self.timeout,
+        )
+        r.raise_for_status()
+        data = r.json()
+
+        choices = data.get("choices", [])
+        if choices:
+            return choices[0].get("message", {}).get("content", "").strip()
+        return ""
+
+    # ── Provider info ────────────────────────────────────────────────────
+
+    def info(self) -> dict:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "base_url": self.base_url,
+            "available": self.is_available(),
+            "has_api_key": bool(self.api_key),
+        }
+
+    # ── High-level helpers ───────────────────────────────────────────────
 
     def etf_commentary(
         self,
@@ -73,15 +203,7 @@ class OllamaClient:
         return_1m: float,
         signal: str,
     ) -> dict:
-        """Return macro commentary and a confidence modifier for an ETF signal.
-
-        Returns:
-            {
-                "commentary": str,
-                "confidence": float,   # 0.0–1.0 — multiplied into position size
-                "reasoning": str,
-            }
-        """
+        """Return macro commentary and a confidence modifier for an ETF signal."""
         if not self.is_available():
             return {"commentary": "", "confidence": 0.7, "reasoning": "LLM unavailable"}
 
@@ -96,13 +218,12 @@ class OllamaClient:
             f"12-month return: {return_12m:+.1f}%\n"
             f"1-month return: {return_1m:+.1f}%\n\n"
             "Given current macro conditions, assess this ETF. "
-            "Return JSON with keys: commentary (1 sentence), reasoning (1 sentence), "
-            "confidence (float 0.0-1.0 representing your conviction the quant signal is correct)."
+            'Return JSON with keys: commentary (1 sentence), reasoning (1 sentence), '
+            'confidence (float 0.0-1.0 representing your conviction the quant signal is correct).'
         )
 
         try:
-            raw = self._generate(prompt, system)
-            # Extract JSON from response (may have surrounding text)
+            raw = self.generate(prompt, system, max_tokens=300)
             start = raw.find("{")
             end = raw.rfind("}") + 1
             if start >= 0 and end > start:
@@ -117,13 +238,8 @@ class OllamaClient:
 
         return {"commentary": "", "confidence": 0.7, "reasoning": "parse error"}
 
-    def signal_commentary(
-        self,
-        symbol: str,
-        signal: str,
-        indicators: dict,
-    ) -> str:
-        """One-sentence commentary on a technical signal (used by non-ETF strategies)."""
+    def signal_commentary(self, symbol: str, signal: str, indicators: dict) -> str:
+        """One-sentence commentary on a technical signal."""
         if not self.is_available():
             return ""
         prompt = (
@@ -132,7 +248,20 @@ class OllamaClient:
             "Give one concise sentence explaining the most important driver of this signal."
         )
         try:
-            return self._generate(prompt)
+            return self.generate(prompt, max_tokens=150)
         except Exception as e:
             logger.debug("LLM signal_commentary failed: %s", e)
             return ""
+
+
+# ── Backward compatibility ───────────────────────────────────────────────────
+
+class OllamaClient(LLMClient):
+    """Legacy alias — creates an Ollama-backed LLMClient."""
+    def __init__(self, host: str = "http://localhost:11434",
+                 model: str = "qwen2.5:14b-instruct-q5_K_M", timeout: int = 60):
+        super().__init__(provider="ollama", model=model, base_url=host, timeout=timeout)
+
+    # Keep old method name working
+    def _generate(self, prompt: str, system: str = "") -> str:
+        return self.generate(prompt, system)

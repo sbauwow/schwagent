@@ -127,9 +127,21 @@ class Config(BaseSettings):
 
     # ── LLM (optional) ───────────────────────────────────────────────────
     LLM_ENABLED: bool = False
+    # Provider: "ollama" (local), "anthropic" (Claude), "openai" (GPT/compatible)
+    LLM_PROVIDER: str = "ollama"
+    LLM_MODEL: str = ""              # override model (empty = provider default)
+    LLM_API_KEY: str = ""            # for anthropic/openai
+    LLM_BASE_URL: str = ""           # override base URL
+    LLM_TEMPERATURE: float = 0.2
+    LLM_MAX_TOKENS: int = 1024
+    LLM_TIMEOUT: int = 60
+    # Legacy Ollama-specific (still work, overridden by LLM_* if set)
     OLLAMA_HOST: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5:14b-instruct-q5_K_M"
     OLLAMA_TIMEOUT: int = 60
+    # Provider-specific API keys (fallbacks if LLM_API_KEY not set)
+    ANTHROPIC_API_KEY: str = ""
+    OPENAI_API_KEY: str = ""
 
     # ── Derived properties ────────────────────────────────────────────────
 

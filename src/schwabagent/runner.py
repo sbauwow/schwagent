@@ -49,21 +49,48 @@ class AgentRunner:
     # ── Initialization ────────────────────────────────────────────────────────
 
     def _init_llm(self):
-        """Initialise Ollama client if LLM_ENABLED, else return None."""
+        """Initialize LLM client (Ollama, Anthropic, or OpenAI)."""
         if not self.config.LLM_ENABLED:
             return None
-        from schwabagent.llm import OllamaClient
-        llm = OllamaClient(
-            host=self.config.OLLAMA_HOST,
-            model=self.config.OLLAMA_MODEL,
-            timeout=self.config.OLLAMA_TIMEOUT,
+        from schwabagent.llm import LLMClient
+
+        provider = self.config.LLM_PROVIDER
+        # Resolve API key: LLM_API_KEY → provider-specific → empty
+        api_key = self.config.LLM_API_KEY
+        if not api_key and provider == "anthropic":
+            api_key = self.config.ANTHROPIC_API_KEY
+        if not api_key and provider == "openai":
+            api_key = self.config.OPENAI_API_KEY
+
+        # Resolve base URL and model (legacy Ollama config as fallback)
+        base_url = self.config.LLM_BASE_URL
+        model = self.config.LLM_MODEL
+        timeout = self.config.LLM_TIMEOUT
+
+        if provider == "ollama" and not base_url:
+            base_url = self.config.OLLAMA_HOST
+        if provider == "ollama" and not model:
+            model = self.config.OLLAMA_MODEL
+        if provider == "ollama" and timeout == 60:
+            timeout = self.config.OLLAMA_TIMEOUT
+
+        llm = LLMClient(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            temperature=self.config.LLM_TEMPERATURE,
+            max_tokens=self.config.LLM_MAX_TOKENS,
         )
+
         if llm.is_available():
-            logger.info("LLM enabled: %s @ %s", self.config.OLLAMA_MODEL, self.config.OLLAMA_HOST)
+            info = llm.info()
+            logger.info("LLM enabled: provider=%s model=%s", info["provider"], info["model"])
         else:
             logger.warning(
-                "LLM_ENABLED=true but Ollama not reachable at %s — disabling LLM overlay",
-                self.config.OLLAMA_HOST,
+                "LLM_ENABLED=true but %s not reachable — disabling LLM overlay",
+                provider,
             )
             return None
         return llm
