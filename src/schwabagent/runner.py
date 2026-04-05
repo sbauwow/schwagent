@@ -42,6 +42,9 @@ class AgentRunner:
         self.strategies: list[Strategy] = self._build_strategies()
         self.autotuner = self._init_autotuner()
         self.dreamcycle = self._init_dreamcycle()
+        self.order_tracker = self._init_order_tracker()
+        self.stream = self._init_streaming()
+        self.scheduler = self._init_scheduler()
 
     # ── Initialization ────────────────────────────────────────────────────────
 
@@ -79,6 +82,44 @@ class AgentRunner:
         """Initialize the dreamcycle (after everything else is ready)."""
         from schwabagent.dreamcycle import DreamCycle
         return DreamCycle(self)
+
+    def _init_order_tracker(self):
+        """Initialize order fill tracking."""
+        from schwabagent.order_tracker import OrderTracker
+        tracker = OrderTracker(self.config, self.state)
+        # Log fill events
+        def _on_fill(order):
+            logger.info("Fill confirmed: %s %d %s @ $%.2f (expected $%.2f)",
+                        order.side, order.fill_quantity, order.symbol,
+                        order.fill_price, order.expected_price)
+            if self.telegram:
+                from schwabagent.telegram import _escape_md
+                slippage = order.fill_price - order.expected_price
+                self.telegram.send_alert(
+                    f"*Order Filled*\n"
+                    f"`{_escape_md(order.symbol)}` {order.side} {order.fill_quantity} "
+                    f"@ ${order.fill_price:,.2f}\n"
+                    f"Slippage: ${slippage:+,.4f}"
+                )
+        tracker.on_fill(_on_fill)
+        return tracker
+
+    def _init_streaming(self):
+        """Initialize WebSocket streaming (optional — starts on demand)."""
+        from schwabagent.streaming import StreamManager
+        stream = StreamManager(self.config, self.client)
+        # Subscribe to all symbols across strategies
+        all_symbols = list(set(
+            self.config.watchlist + self.config.etf_universe + self.config.scalp_universe
+        ))
+        stream.subscribe_quotes(all_symbols)
+        stream.subscribe_account_activity(on_fill=self.order_tracker.handle_stream_fill)
+        return stream
+
+    def _init_scheduler(self):
+        """Initialize the cron scheduler."""
+        from schwabagent.scheduler import Scheduler
+        return Scheduler(self.config)
 
     def _init_telegram(self):
         """Initialize Telegram bot if enabled."""
@@ -282,11 +323,29 @@ class AgentRunner:
                         self.feedback.resolve_from_trade(t)
                     if self.telegram:
                         self.telegram.send_trade_alert(t)
+                    # Track live orders for fill confirmation
+                    if not t.get("dry_run") and t.get("order_id") and t["order_id"] != "dry":
+                        self.order_tracker.track(
+                            order_id=t["order_id"],
+                            symbol=t["symbol"],
+                            side=t["side"],
+                            quantity=t.get("quantity", 0),
+                            expected_price=t.get("price", 0),
+                            account_hash=account.account_hash,
+                            strategy=t.get("strategy", ""),
+                        )
                 all_trades.extend(trades)
             except Exception as e:
                 logger.error("Strategy %s failed: %s", strategy.name, e)
                 if self.telegram:
                     self.telegram.send_error(f"Strategy {strategy.name}: {e}")
+
+        # Check pending order fills
+        if self.order_tracker.pending_count > 0:
+            try:
+                self.order_tracker.check_fills(self.client)
+            except Exception as e:
+                logger.error("Order fill check failed: %s", e)
 
         # Run auto-tuner evaluation after each cycle
         try:
@@ -346,8 +405,11 @@ class AgentRunner:
         except ValueError:
             pass  # not in main thread
 
-        # Start dreamcycle in background (30-min interval)
+        # Start background services
+        self.stream.start()
         self.dreamcycle.start(interval_minutes=30)
+        self.scheduler.setup_defaults(self)
+        self.scheduler.start()
 
         mode = "DRY RUN" if self.config.DRY_RUN else "LIVE"
         self.console.rule(f"[bold green]Schwab Agent Started ({mode})[/bold green]")
@@ -380,6 +442,8 @@ class AgentRunner:
                     break
                 time.sleep(1)
 
+        self.scheduler.stop()
+        self.stream.stop()
         self.dreamcycle.stop()
         self.console.rule("[bold red]Schwab Agent Stopped[/bold red]")
         self._print_status()
