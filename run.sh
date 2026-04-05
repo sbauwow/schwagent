@@ -393,6 +393,65 @@ print()
 "
 }
 
+cmd_sec() {
+    SYMBOL="${2:-AAPL}"
+    ACTION="${3:-filings}"
+
+    $VENV -c "
+import sys
+from schwabagent.sec import SECAnalyzer
+from schwabagent.config import Config
+
+sec = SECAnalyzer(Config())
+symbol = '${SYMBOL}'.upper()
+action = '${ACTION}'
+
+if action == 'filings':
+    for form in ['10-K', '10-Q', '8-K']:
+        filings = sec.get_filings(symbol, form=form, limit=3)
+        if filings:
+            print(f'\n  {form}:')
+            for f in filings:
+                print(f'    {f.filing_date}  {f.description[:60] if f.description else f.accession_number}')
+
+elif action == 'analyze':
+    print(f'  Analyzing latest 10-K for {symbol}...')
+    result = sec.analyze_filing(symbol, form='10-K')
+    print(f'\n  Filing date: {result.filing_date}')
+    print(f'  Text length: {result.raw_text_length:,} chars')
+    print(f'  Sections: {result.sections_extracted}')
+    print(f'\n  Summary: {result.summary}')
+    print(f'\n  Financials: {result.key_financials}')
+    print(f'\n  Risks: {result.risk_assessment}')
+    print(f'\n  Sentiment: {result.sentiment}')
+    if result.actionable_insights:
+        print(f'\n  Insights:')
+        for ins in result.actionable_insights:
+            print(f'    - {ins}')
+
+elif action == 'risks':
+    print(f'  Extracting risk factors for {symbol}...')
+    risks = sec.extract_risk_factors(symbol)
+    print(f'\n{risks}')
+
+elif action == 'compare':
+    print(f'  Comparing last two 10-Q filings for {symbol}...')
+    comparison = sec.compare_filings(symbol, form='10-Q')
+    print(f'\n{comparison}')
+
+elif action == 'scan':
+    symbols = '${SYMBOL}'.split(',')
+    print(f'  Scanning recent 8-K filings for {symbols}...')
+    results = sec.quick_scan(symbols, form='8-K')
+    for r in results[:20]:
+        print(f'    {r[\"date\"]}  {r[\"symbol\"]}  {r[\"form\"]}  {r[\"description\"][:60]}')
+
+else:
+    print(f'  Unknown action: {action}')
+    print(f'  Usage: ./run.sh sec SYMBOL [filings|analyze|risks|compare|scan]')
+"
+}
+
 cmd_pf() {
     SYMBOL="${2:-SPY}"
     shift 2 2>/dev/null || shift 1 2>/dev/null || true
@@ -454,8 +513,9 @@ case "${1:-once}" in
     feedback) cmd_feedback "$@" ;;
     backtest) cmd_backtest "$@" ;;
     dream)   cmd_dream ;;
+    sec)     cmd_sec "$@" ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|dream]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|dream|sec]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -469,5 +529,6 @@ case "${1:-once}" in
         echo "  feedback Show signal accuracy, calibration, and drift alerts"
         echo "  backtest Run strategy backtest (e.g. ./run.sh backtest momentum 2020-01-01 2024-12-31)"
         echo "  dream    Run one dreamcycle (autonomous research + calibration)"
+        echo "  sec      SEC filings (e.g. ./run.sh sec AAPL [filings|analyze|risks|compare|scan])"
         ;;
 esac
