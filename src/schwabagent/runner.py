@@ -40,6 +40,7 @@ class AgentRunner:
         self.telegram = self._init_telegram()
         self.feedback = self._init_feedback()
         self.strategies: list[Strategy] = self._build_strategies()
+        self.autotuner = self._init_autotuner()
 
     # ── Initialization ────────────────────────────────────────────────────────
 
@@ -64,9 +65,14 @@ class AgentRunner:
         return llm
 
     def _init_feedback(self):
-        """Initialize the ML feedback loop."""
+        """Initialize the ML feedback loop and auto-tuner."""
         from schwabagent.feedback import FeedbackLoop
         return FeedbackLoop(self.config)
+
+    def _init_autotuner(self):
+        """Initialize the auto-tuner (after feedback and telegram are ready)."""
+        from schwabagent.feedback import AutoTuner
+        return AutoTuner(self.config, self.feedback, self.telegram)
 
     def _init_telegram(self):
         """Initialize Telegram bot if enabled."""
@@ -252,9 +258,19 @@ class AgentRunner:
         for strategy in self.strategies:
             if self.risk.is_killed():
                 break
+
+            # Check auto-tuner state for this strategy
+            tuner_state = self.autotuner.get_state(strategy.name)
+            if tuner_state.state == "paused":
+                logger.debug("[autotune] Skipping %s — paused", strategy.name)
+                continue
+
             try:
                 trades = strategy.run_once()
                 for t in trades:
+                    # Apply auto-tuner sizing adjustment
+                    if tuner_state.sizing_factor < 1.0 and t.get("side") == "BUY":
+                        t["_autotune_sizing"] = tuner_state.sizing_factor
                     # Record to feedback loop
                     if t.get("side") == "SELL":
                         self.feedback.resolve_from_trade(t)
@@ -265,6 +281,15 @@ class AgentRunner:
                 logger.error("Strategy %s failed: %s", strategy.name, e)
                 if self.telegram:
                     self.telegram.send_error(f"Strategy {strategy.name}: {e}")
+
+        # Run auto-tuner evaluation after each cycle
+        try:
+            actions = self.autotuner.evaluate()
+            if actions:
+                logger.info("[autotune] %d actions taken: %s",
+                            len(actions), [a["action"] for a in actions])
+        except Exception as e:
+            logger.error("[autotune] Evaluation failed: %s", e)
 
         return all_trades
 

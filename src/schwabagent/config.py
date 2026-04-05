@@ -68,6 +68,18 @@ class Config(BaseSettings):
     LIVE_COMPOSITE: bool = False
     LIVE_ETF_SCALP: bool = False
 
+    # ── Auto-tune (self-improvement loop) ────────────────────────────
+    AUTOTUNE_ENABLED: bool = True
+    AUTOTUNE_MIN_TRADES: int = 20           # min resolved trades before tuning
+    AUTOTUNE_EVAL_WINDOW_DAYS: int = 14     # rolling window for evaluation
+    AUTOTUNE_WIN_RATE_WARN: float = 40.0    # warn below this win rate %
+    AUTOTUNE_WIN_RATE_PAUSE: float = 30.0   # pause strategy below this %
+    AUTOTUNE_PROFIT_FACTOR_WARN: float = 1.0  # warn below this PF
+    AUTOTUNE_PROFIT_FACTOR_PAUSE: float = 0.5 # pause below this PF
+    AUTOTUNE_THROTTLE_FACTOR: float = 0.5   # scale sizing to this when warned
+    AUTOTUNE_RECOVERY_WINDOW_DAYS: int = 7  # must sustain recovery for N days
+    AUTOTUNE_SYMBOL_MAX_LOSS_STREAK: int = 5  # auto-exclude symbol after N consecutive losses
+
     # ── Account type ──────────────────────────────────────────────────
     # "margin" or "cash" — affects PDT rule enforcement
     ACCOUNT_TYPE: str = "margin"

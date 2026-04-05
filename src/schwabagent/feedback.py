@@ -74,6 +74,26 @@ CREATE TABLE IF NOT EXISTS drift (
     alert_level TEXT
 );
 
+CREATE TABLE IF NOT EXISTS adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT,
+    details TEXT,
+    previous_state TEXT,
+    new_state TEXT
+);
+
+CREATE TABLE IF NOT EXISTS symbol_exclusions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    reason TEXT,
+    expires_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_signals_strategy ON signals(strategy, ts);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol, ts);
 CREATE INDEX IF NOT EXISTS idx_signals_trade ON signals(trade_id);
@@ -413,5 +433,346 @@ class FeedbackLoop:
             logger.info("Feedback cleanup: deleted %d records older than %d days", deleted, retention_days)
         return deleted
 
+    # ── Adjustment logging ────────────────────────────────────────────────
+
+    def record_adjustment(
+        self, strategy: str, action: str, reason: str,
+        details: dict | None = None, previous_state: str = "", new_state: str = "",
+    ) -> None:
+        self._db.execute(
+            """INSERT INTO adjustments (ts, strategy, action, reason, details, previous_state, new_state)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (datetime.now(timezone.utc).isoformat(), strategy, action, reason,
+             json.dumps(details) if details else None, previous_state, new_state),
+        )
+        self._db.commit()
+
+    def get_adjustments(self, days: int = 30) -> list[dict]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        rows = self._db.execute(
+            "SELECT * FROM adjustments WHERE ts >= ? ORDER BY ts DESC", (cutoff,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def exclude_symbol(self, strategy: str, symbol: str, reason: str, days: int = 7) -> None:
+        """Temporarily exclude a symbol from a strategy."""
+        expires = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+        self._db.execute(
+            """INSERT INTO symbol_exclusions (ts, strategy, symbol, reason, expires_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (datetime.now(timezone.utc).isoformat(), strategy, symbol, reason, expires),
+        )
+        self._db.commit()
+
+    def get_excluded_symbols(self, strategy: str) -> set[str]:
+        """Return symbols currently excluded for a strategy."""
+        now = datetime.now(timezone.utc).isoformat()
+        rows = self._db.execute(
+            "SELECT DISTINCT symbol FROM symbol_exclusions WHERE strategy = ? AND expires_at > ?",
+            (strategy, now),
+        ).fetchall()
+        return {row["symbol"] for row in rows}
+
+    def get_symbol_streak(self, strategy: str, symbol: str, days: int = 30) -> int:
+        """Return the current consecutive loss streak for a symbol in a strategy.
+        Returns positive int for losses, negative for wins."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        rows = self._db.execute(
+            """SELECT realized_pnl FROM signals
+               WHERE strategy = ? AND symbol = ? AND ts >= ? AND realized_pnl IS NOT NULL
+               ORDER BY ts DESC""",
+            (strategy, symbol, cutoff),
+        ).fetchall()
+        if not rows:
+            return 0
+        streak = 0
+        first_sign = rows[0]["realized_pnl"] <= 0  # True = loss
+        for row in rows:
+            is_loss = row["realized_pnl"] <= 0
+            if is_loss == first_sign:
+                streak += 1
+            else:
+                break
+        return streak if first_sign else -streak
+
     def close(self) -> None:
         self._db.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AUTO-TUNER — closes the feedback loop by adjusting strategy behavior
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class StrategyState:
+    """Runtime state for a single strategy managed by the auto-tuner."""
+    NORMAL = "normal"
+    THROTTLED = "throttled"
+    PAUSED = "paused"
+
+    def __init__(self, name: str):
+        self.name = name
+        self.state: str = self.NORMAL
+        self.sizing_factor: float = 1.0  # multiplier on position size
+        self.paused_at: str = ""
+        self.throttled_at: str = ""
+        self.last_eval: str = ""
+        self.excluded_symbols: set[str] = set()
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "state": self.state,
+            "sizing_factor": self.sizing_factor,
+            "paused_at": self.paused_at,
+            "throttled_at": self.throttled_at,
+            "excluded_symbols": sorted(self.excluded_symbols),
+        }
+
+
+class AutoTuner:
+    """Self-improvement loop that adjusts strategy behavior based on performance.
+
+    Runs after each execution cycle and:
+    1. Evaluates each strategy's recent performance
+    2. Throttles (reduce sizing) strategies that are underperforming
+    3. Pauses strategies that are critically underperforming
+    4. Restores strategies that recover
+    5. Excludes symbols on consecutive loss streaks
+    6. Logs all adjustments to the feedback database
+    """
+
+    def __init__(self, config: Config, feedback: FeedbackLoop, telegram=None):
+        self.config = config
+        self.feedback = feedback
+        self.telegram = telegram
+        self._states: dict[str, StrategyState] = {}
+        self._load_state()
+
+    def _load_state(self) -> None:
+        """Load persisted auto-tuner state from feedback DB."""
+        # Restore from most recent adjustments
+        for adj in self.feedback.get_adjustments(days=self.config.AUTOTUNE_EVAL_WINDOW_DAYS):
+            strategy = adj["strategy"]
+            if strategy not in self._states:
+                self._states[strategy] = StrategyState(strategy)
+            s = self._states[strategy]
+            if adj["action"] == "pause" and s.state == StrategyState.NORMAL:
+                s.state = StrategyState.PAUSED
+                s.paused_at = adj["ts"]
+            elif adj["action"] == "throttle" and s.state == StrategyState.NORMAL:
+                s.state = StrategyState.THROTTLED
+                s.sizing_factor = self.config.AUTOTUNE_THROTTLE_FACTOR
+                s.throttled_at = adj["ts"]
+            elif adj["action"] in ("restore", "unpause"):
+                s.state = StrategyState.NORMAL
+                s.sizing_factor = 1.0
+
+    def get_state(self, strategy: str) -> StrategyState:
+        if strategy not in self._states:
+            self._states[strategy] = StrategyState(strategy)
+        return self._states[strategy]
+
+    def evaluate(self) -> list[dict]:
+        """Run the auto-tune evaluation cycle. Returns list of actions taken."""
+        if not self.config.AUTOTUNE_ENABLED:
+            return []
+
+        actions = []
+        window = self.config.AUTOTUNE_EVAL_WINDOW_DAYS
+
+        summary = self.feedback.get_strategy_summary(days=window)
+
+        for strategy, data in summary.items():
+            resolved = data.get("resolved") or 0
+            if resolved < self.config.AUTOTUNE_MIN_TRADES:
+                continue
+
+            state = self.get_state(strategy)
+            wins = data.get("wins") or 0
+            losses = data.get("losses") or 0
+            win_rate = wins / resolved * 100 if resolved > 0 else 0
+            total_pnl = data.get("total_pnl") or 0
+            avg_pnl = data.get("avg_pnl") or 0
+
+            # Compute profit factor from calibration
+            cal = self.feedback.calibrate(strategy, days=window)
+            all_wins = sum(c.get("avg_win", 0) * c.get("wins", 0) for c in cal.values())
+            all_losses = sum(abs(c.get("avg_loss", 0)) * c.get("losses", 0) for c in cal.values())
+            profit_factor = all_wins / all_losses if all_losses > 0 else float("inf")
+
+            action = self._evaluate_strategy(state, win_rate, profit_factor, resolved, strategy)
+            if action:
+                actions.append(action)
+
+            # Check per-symbol streaks
+            symbol_actions = self._check_symbol_streaks(strategy, window)
+            actions.extend(symbol_actions)
+
+            state.last_eval = datetime.now(timezone.utc).isoformat()
+
+        return actions
+
+    def _evaluate_strategy(
+        self, state: StrategyState, win_rate: float, profit_factor: float,
+        resolved: int, strategy: str,
+    ) -> dict | None:
+        """Evaluate a single strategy and return an action dict, or None."""
+        now = datetime.now(timezone.utc)
+
+        # ── Currently PAUSED — check for recovery ────────────────────
+        if state.state == StrategyState.PAUSED:
+            if win_rate >= self.config.AUTOTUNE_WIN_RATE_WARN and profit_factor >= self.config.AUTOTUNE_PROFIT_FACTOR_WARN:
+                # Check if sustained recovery
+                if state.paused_at:
+                    try:
+                        paused_dt = datetime.fromisoformat(state.paused_at.replace("Z", "+00:00"))
+                        days_paused = (now - paused_dt).days
+                    except ValueError:
+                        days_paused = 0
+                    if days_paused < self.config.AUTOTUNE_RECOVERY_WINDOW_DAYS:
+                        return None  # Not enough time to confirm recovery
+
+                return self._restore(state, strategy,
+                    f"Recovered: wr={win_rate:.1f}% pf={profit_factor:.2f} "
+                    f"(above thresholds after pause)")
+            return None
+
+        # ── Currently THROTTLED — check for recovery or further degradation
+        if state.state == StrategyState.THROTTLED:
+            if win_rate >= self.config.AUTOTUNE_WIN_RATE_WARN and profit_factor >= self.config.AUTOTUNE_PROFIT_FACTOR_WARN:
+                return self._restore(state, strategy,
+                    f"Recovered: wr={win_rate:.1f}% pf={profit_factor:.2f}")
+            if win_rate < self.config.AUTOTUNE_WIN_RATE_PAUSE or profit_factor < self.config.AUTOTUNE_PROFIT_FACTOR_PAUSE:
+                return self._pause(state, strategy,
+                    f"Degraded further while throttled: wr={win_rate:.1f}% pf={profit_factor:.2f}")
+            return None
+
+        # ── NORMAL — check for degradation ───────────────────────────
+        if win_rate < self.config.AUTOTUNE_WIN_RATE_PAUSE or profit_factor < self.config.AUTOTUNE_PROFIT_FACTOR_PAUSE:
+            return self._pause(state, strategy,
+                f"Critical underperformance: wr={win_rate:.1f}% pf={profit_factor:.2f} "
+                f"(n={resolved})")
+
+        if win_rate < self.config.AUTOTUNE_WIN_RATE_WARN or profit_factor < self.config.AUTOTUNE_PROFIT_FACTOR_WARN:
+            return self._throttle(state, strategy,
+                f"Underperforming: wr={win_rate:.1f}% pf={profit_factor:.2f} "
+                f"(n={resolved})")
+
+        return None
+
+    def _throttle(self, state: StrategyState, strategy: str, reason: str) -> dict:
+        prev = state.state
+        state.state = StrategyState.THROTTLED
+        state.sizing_factor = self.config.AUTOTUNE_THROTTLE_FACTOR
+        state.throttled_at = datetime.now(timezone.utc).isoformat()
+
+        self.feedback.record_adjustment(
+            strategy, "throttle", reason,
+            details={"sizing_factor": state.sizing_factor},
+            previous_state=prev, new_state=state.state,
+        )
+        logger.warning("[autotune] THROTTLE %s: %s (sizing=%.0f%%)", strategy, reason, state.sizing_factor * 100)
+
+        if self.telegram:
+            from schwabagent.telegram import _escape_md
+            self.telegram.send_alert(
+                f"*Auto\\-tune: THROTTLE {_escape_md(strategy)}*\n"
+                f"{_escape_md(reason)}\n"
+                f"Position sizing reduced to {state.sizing_factor:.0%}"
+            )
+
+        return {"strategy": strategy, "action": "throttle", "reason": reason, "sizing_factor": state.sizing_factor}
+
+    def _pause(self, state: StrategyState, strategy: str, reason: str) -> dict:
+        prev = state.state
+        state.state = StrategyState.PAUSED
+        state.sizing_factor = 0.0
+        state.paused_at = datetime.now(timezone.utc).isoformat()
+
+        self.feedback.record_adjustment(
+            strategy, "pause", reason,
+            previous_state=prev, new_state=state.state,
+        )
+        logger.warning("[autotune] PAUSE %s: %s", strategy, reason)
+
+        if self.telegram:
+            from schwabagent.telegram import _escape_md
+            self.telegram.send_alert(
+                f"*Auto\\-tune: PAUSED {_escape_md(strategy)}*\n"
+                f"{_escape_md(reason)}\n"
+                f"Strategy will not trade until performance recovers\\."
+            )
+
+        return {"strategy": strategy, "action": "pause", "reason": reason}
+
+    def _restore(self, state: StrategyState, strategy: str, reason: str) -> dict:
+        prev = state.state
+        state.state = StrategyState.NORMAL
+        state.sizing_factor = 1.0
+        state.paused_at = ""
+        state.throttled_at = ""
+
+        self.feedback.record_adjustment(
+            strategy, "restore", reason,
+            previous_state=prev, new_state=state.state,
+        )
+        logger.info("[autotune] RESTORE %s: %s", strategy, reason)
+
+        if self.telegram:
+            from schwabagent.telegram import _escape_md
+            self.telegram.send_alert(
+                f"*Auto\\-tune: RESTORED {_escape_md(strategy)}*\n"
+                f"{_escape_md(reason)}"
+            )
+
+        return {"strategy": strategy, "action": "restore", "reason": reason}
+
+    def _check_symbol_streaks(self, strategy: str, window_days: int) -> list[dict]:
+        """Check for consecutive loss streaks per symbol and auto-exclude."""
+        actions = []
+        max_streak = self.config.AUTOTUNE_SYMBOL_MAX_LOSS_STREAK
+
+        # Get all symbols with resolved trades in the window
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+        rows = self.feedback._db.execute(
+            """SELECT DISTINCT symbol FROM signals
+               WHERE strategy = ? AND ts >= ? AND realized_pnl IS NOT NULL""",
+            (strategy, cutoff),
+        ).fetchall()
+
+        already_excluded = self.feedback.get_excluded_symbols(strategy)
+
+        for row in rows:
+            symbol = row["symbol"]
+            if symbol in already_excluded:
+                continue
+
+            streak = self.feedback.get_symbol_streak(strategy, symbol, days=window_days)
+            if streak >= max_streak:
+                reason = f"{streak} consecutive losses in {strategy}"
+                self.feedback.exclude_symbol(strategy, symbol, reason, days=7)
+                self.feedback.record_adjustment(
+                    strategy, "exclude_symbol", reason,
+                    details={"symbol": symbol, "streak": streak, "exclusion_days": 7},
+                )
+                logger.warning("[autotune] EXCLUDE %s from %s: %s", symbol, strategy, reason)
+
+                if self.telegram:
+                    from schwabagent.telegram import _escape_md
+                    self.telegram.send_alert(
+                        f"*Auto\\-tune: excluded {_escape_md(symbol)} from {_escape_md(strategy)}*\n"
+                        f"{_escape_md(reason)}\\. Excluded for 7 days\\."
+                    )
+
+                state = self.get_state(strategy)
+                state.excluded_symbols.add(symbol)
+                actions.append({"strategy": strategy, "action": "exclude_symbol", "symbol": symbol, "reason": reason})
+
+        return actions
+
+    def status(self) -> dict:
+        """Return auto-tuner state for display."""
+        return {
+            name: s.to_dict() for name, s in self._states.items()
+        }

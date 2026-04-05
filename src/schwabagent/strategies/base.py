@@ -128,6 +128,22 @@ class Strategy(ABC):
             return False
         return self.is_live
 
+    def _autotune_sizing(self, order_value: float, opportunity: dict | None = None) -> float:
+        """Apply auto-tuner sizing adjustment to an order value.
+
+        If the strategy is throttled, the auto-tuner sets a sizing factor < 1.0
+        which is passed through the opportunity dict by the runner.
+        """
+        factor = 1.0
+        if opportunity:
+            factor = opportunity.get("_autotune_sizing", 1.0)
+        if factor < 1.0:
+            adjusted = order_value * factor
+            logger.info("[autotune] Sizing %s reduced: $%.2f → $%.2f (factor=%.0f%%)",
+                        self.name, order_value, adjusted, factor * 100)
+            return adjusted
+        return order_value
+
     def _fetch_ohlcv(self, symbol: str, days: int = 100) -> pd.DataFrame | None:
         """Fetch OHLCV, logging a warning if insufficient data is returned."""
         df = self.client.get_ohlcv(symbol, days=days)
