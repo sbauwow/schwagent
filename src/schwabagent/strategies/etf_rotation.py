@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -73,6 +74,7 @@ class ETFScore:
     signal: Signal = Signal.HOLD
     llm_confidence: float = 1.0
     llm_commentary: str = ""
+    div_note: str = ""  # set when near ex-div date
 
 
 class ETFRotationStrategy(Strategy):
@@ -131,6 +133,31 @@ class ETFRotationStrategy(Strategy):
             logger.warning("[etf_rotation] No ETFs could be scored")
             return []
 
+        # ── Dividend filter: penalise ETFs near ex-div date ──────────
+        div_lookforward = self.config.ETF_DIVIDEND_LOOKFORWARD_DAYS
+        if div_lookforward > 0:
+            quotes = self.client.get_quotes([s.symbol for s in scores])
+            today = datetime.now(timezone.utc).date()
+            for s in scores:
+                q = quotes.get(s.symbol)
+                if q and q.next_div_ex_date:
+                    try:
+                        ex_date = datetime.strptime(q.next_div_ex_date, "%Y-%m-%d").date()
+                        days_until = (ex_date - today).days
+                        if 0 <= days_until <= div_lookforward:
+                            # Reduce score by 50% to push it down the ranking
+                            original = s.score
+                            s.score *= 0.5
+                            s.div_note = (
+                                f"Near ex-div date ({q.next_div_ex_date}, "
+                                f"{days_until}d away), score reduced {original:+.2f}→{s.score:+.2f}"
+                            )
+                            logger.info(
+                                "[etf_rotation] %s: %s", s.symbol, s.div_note,
+                            )
+                    except ValueError:
+                        pass  # unparseable date — skip filter
+
         # Rank by score descending
         scores.sort(key=lambda s: s.score, reverse=True)
         for i, s in enumerate(scores):
@@ -171,7 +198,7 @@ class ETFRotationStrategy(Strategy):
         for s in scores:
             if s.signal == Signal.HOLD and not self._holding(s.symbol):
                 continue
-            opps.append({
+            opp = {
                 "symbol": s.symbol,
                 "signal": s.signal,
                 "score": SIGNAL_SCORE[s.signal],
@@ -186,7 +213,10 @@ class ETFRotationStrategy(Strategy):
                 "strategy": self.name,
                 "reason": self._reason(s, bear_market),
                 "price": self._last_price(s.symbol),
-            })
+            }
+            if s.div_note:
+                opp["div_note"] = s.div_note
+            opps.append(opp)
 
         opps.sort(key=lambda o: abs(o["score"]), reverse=True)
         logger.info(
@@ -403,6 +433,8 @@ class ETFRotationStrategy(Strategy):
             f"6m={s.ret_6m:+.1f}%",
             f"12m={s.ret_12m:+.1f}%",
         ]
+        if s.div_note:
+            parts.append(f"div={s.div_note}")
         if s.llm_commentary:
             parts.append(f'llm="{s.llm_commentary}"')
         return "  ".join(parts)

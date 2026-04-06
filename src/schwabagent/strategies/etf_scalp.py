@@ -131,6 +131,10 @@ class ETFScalpStrategy(Strategy):
             return self._check_exits_only()
 
         universe = self.config.scalp_universe
+
+        # Pre-fetch quotes for liquidity filtering
+        quotes = self.client.get_quotes(universe) if universe else {}
+
         opportunities = []
 
         for symbol in universe:
@@ -138,8 +142,30 @@ class ETFScalpStrategy(Strategy):
             if any(p.symbol == symbol for p in self._open_positions):
                 continue
 
+            # ── Liquidity filter ──────────────────────────────────────────
+            quote = quotes.get(symbol)
+            if quote is not None:
+                if quote.avg_10d_volume < self.config.SCALP_MIN_AVG_VOLUME:
+                    logger.info(
+                        "[etf_scalp] SKIP %s: avg volume %s < %s",
+                        symbol, f"{quote.avg_10d_volume:,}",
+                        f"{self.config.SCALP_MIN_AVG_VOLUME:,}",
+                    )
+                    continue
+                if quote.spread_pct > self.config.SCALP_MAX_SPREAD_PCT:
+                    logger.info(
+                        "[etf_scalp] SKIP %s: spread %.4f%% > %.4f%%",
+                        symbol, quote.spread_pct, self.config.SCALP_MAX_SPREAD_PCT,
+                    )
+                    continue
+
             signal = self._evaluate_entry(symbol)
             if signal is not None:
+                # Attach liquidity data to signal output
+                if quote is not None:
+                    signal["avg_10d_volume"] = quote.avg_10d_volume
+                    signal["spread_pct"] = round(quote.spread_pct, 4)
+                    signal["spread"] = round(quote.spread, 4)
                 opportunities.append(signal)
 
         # Add exit signals for open positions

@@ -103,6 +103,11 @@ class Config(BaseSettings):
     CONVICTION_HOLD_DAYS: int = 30
     CONVICTION_MAX_POSITION: float = 10000.0
 
+    # ── Liquidity & dividend filters ─────────────────────────────────
+    SCALP_MIN_AVG_VOLUME: int = 1_000_000    # skip ETFs with <1M avg daily volume
+    SCALP_MAX_SPREAD_PCT: float = 0.10       # skip ETFs with >0.10% spread
+    ETF_DIVIDEND_LOOKFORWARD_DAYS: int = 3   # avoid buying within N days of ex-date
+
     # ── ETF Scalp strategy ───────────────────────────────────────────
     # Liquid broad ETFs only — no restricted issuer, no leveraged, no inverse
     SCALP_UNIVERSE: str = "SPY,QQQ,IWM,DIA,EFA,EEM,TLT,IEF,GLD,VNQ"

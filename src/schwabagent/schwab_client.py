@@ -54,6 +54,13 @@ class Quote:
     last: float
     volume: int
     change_pct: float
+    # Liquidity & fundamental fields
+    spread: float = 0.0           # ask - bid
+    spread_pct: float = 0.0       # spread / mid price as percentage
+    avg_10d_volume: int = 0       # 10-day average volume
+    next_div_ex_date: str = ""    # YYYY-MM-DD or empty
+    next_div_amount: float = 0.0  # per-share dividend amount
+    pe_ratio: float = 0.0
 
 
 # ── Client ─────────────────────────────────────────────────────────────────────
@@ -338,13 +345,27 @@ class SchwabClient:
         for symbol, data in raw.items():
             try:
                 q = data.get("quote", data)  # schema varies by asset type
+                fund = data.get("fundamental", {})
+
+                bid = float(q.get("bidPrice", q.get("bid", 0)))
+                ask = float(q.get("askPrice", q.get("ask", 0)))
+                spread = ask - bid
+                mid = (bid + ask) / 2 if (bid + ask) > 0 else 0.0
+                spread_pct = (spread / mid * 100) if mid > 0 else 0.0
+
                 quotes[symbol] = Quote(
                     symbol=symbol,
-                    bid=float(q.get("bidPrice", q.get("bid", 0))),
-                    ask=float(q.get("askPrice", q.get("ask", 0))),
+                    bid=bid,
+                    ask=ask,
                     last=float(q.get("lastPrice", q.get("last", q.get("mark", 0)))),
                     volume=int(q.get("totalVolume", q.get("volume", 0))),
                     change_pct=float(q.get("netPercentChangeInDouble", q.get("percentChange", 0))),
+                    spread=round(spread, 6),
+                    spread_pct=round(spread_pct, 6),
+                    avg_10d_volume=int(fund.get("avg10DaysVolume", 0)),
+                    next_div_ex_date=str(fund.get("nextDivExDate", "") or ""),
+                    next_div_amount=float(fund.get("nextDivAmount", 0.0)),
+                    pe_ratio=float(fund.get("peRatio", 0.0)),
                 )
             except Exception as e:
                 logger.warning("Failed to parse quote for %s: %s", symbol, e)
