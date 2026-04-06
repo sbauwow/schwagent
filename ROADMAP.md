@@ -1,175 +1,209 @@
 # schwab-agent Roadmap
 
-Ranked by ROI — highest value, lowest effort first.
+Last updated: 2026-04-05
+
+## Current State
+
+11,800 LOC Python, 69/70 tests passing, 7 strategies, 5 Schwab accounts connected.
+
+**What works today:**
+- Dual Schwab API (Account + Market Data), OAuth2 enrolled
+- 7 strategies: ETF Rotation, ETF Scalp, Momentum, Mean Reversion, Trend Following, Composite, Conviction Hold
+- 31 CMT-grade technical indicators
+- CFA-grade fundamental analysis (DCF, Graham, Piotroski, Altman, multi-factor)
+- SEC EDGAR filing retrieval + LLM analysis
+- ML feedback loop with auto-tuner (throttle → pause → restore)
+- Dreamcycle (7-phase autonomous research loop)
+- Backtesting with parameter sweep (800-run optimization)
+- WebSocket streaming, order fill tracking, cron scheduler
+- Telegram bot (alerts, commands, trade approval gate)
+- Multi-provider LLM (Ollama, Anthropic, OpenAI)
+- Risk management (PDT, wash sale, position limits, drawdown kill)
+- Point & Figure charting
+- DRY_RUN=true default with per-strategy live toggles
+
+**Known issues:**
+- 1 test failure (risk check ordering in test_total_exposure_cap)
+- No earnings calendar avoidance
+- No regime detection (all strategies run in all conditions)
+- No cross-account portfolio view (5 accounts treated independently)
+- No options support
+- No web dashboard
+- Test coverage thin (70 tests for 11K LOC)
 
 ---
 
 ## Completed
 
-### Core infrastructure
-- **Dual Schwab API architecture** — separate OAuth apps for Account (trading) and Market Data APIs
-- **Per-strategy live trading toggles** — two-layer safety: global `DRY_RUN` + per-strategy `LIVE_<name>` flags
-- **Trading rules engine** — auto-detects account type (CASH/MARGIN) from API, enforces PDT, closing-only, wash sale
-- **Multi-account support** — 5 accounts connected (1 cash HSA, 4 margin), scalp strategy targets separate account
-- **API rate limiting** — sliding window throttle (120 req/60s) on all Schwab API calls
-- **Price anomaly detection** — flags >15% deviations from rolling average
-- **Position reconciliation** — compares expected vs actual positions from Schwab API
-
-### Strategies (6)
-- **ETF Rotation** — dual momentum across 12 ETFs, bear-market filter (SPY < SMA200), LLM overlay
-- **ETF Scalp** — intraday 3-min bar volume/price breakout, tight TP/SL, settlement-aware tranches
-- **Momentum** — SMA(20/50) + RSI(14) + MACD
-- **Mean Reversion** — Bollinger Bands + RSI + z-score
-- **Trend Following** — EMA(20/50/200) + ADX(35), parameter-optimized via 800-backtest sweep
-- **Composite** — multi-strategy consensus averaging
-- **Strategy template** — `TEMPLATE.py` with 10-question design checklist
-
-### Analysis & research
-- **31 CMT-grade technical indicators** — KAMA, KST, Ichimoku, Keltner/Donchian, Stochastic, CCI, Elder Ray, Aroon, Chandelier/SAR, Fibonacci, pivots, OBV, CMF, MFI, VWAP, divergence detection
-- **CFA-grade fundamental analysis** — DCF, Graham Number, PEG, Altman Z-Score, Piotroski F-Score, ROIC, ROE, ROA, earnings quality, margin stability, multi-factor model (Value+Quality+Momentum)
-- **SEC EDGAR filing tool** — retrieve 10-K/10-Q/8-K filings, LLM-powered analysis (summary, risks, sentiment, insights), compare consecutive filings, multi-symbol 8-K scan
-- **Point & Figure charting** — pypf integration powered by Schwab market data
-- **Backtesting framework** — walk-forward simulation using S&P 500 historical data (2000–2026), parameter sweep capability
-
-### Self-improvement loop
-- **ML feedback loop** — records every signal to SQLite, links trade outcomes, per-strategy calibration (win rate, profit factor by signal type), drift detection
-- **Auto-tuner** — throttle (50% sizing) → pause → restore cycle based on rolling performance. Auto-excludes symbols with 5+ consecutive losses. Telegram alerts on all state changes.
-- **Dreamcycle** — 7-phase autonomous background loop: scan, calibrate, research, reconcile, digest, improve, cleanup
-
-### Interface
-- **Telegram bot** — alerts (trades, kill switch, errors), commands (/status /pnl /positions /kill /resume), inline-button trade approval
-- **Skills framework** — declarative SKILL.md files, 9 starter skills across analysis/trading/research
-- **Schwab API reference** — full field-level documentation of every endpoint response
+- Phase 0: Core infrastructure (dual API, risk engine, trading rules, 5 accounts)
+- Phase 1: Real-time data (WebSocket streaming, order fill tracking, cron scheduler)
+- 7 strategies implemented and backtested
+- Full analysis toolkit (31 indicators, fundamentals, SEC filings, LLM)
+- Self-improvement loop (ML feedback, auto-tuner, dreamcycle)
+- Telegram bot with trade approval
 
 ---
 
-## Phase 1 — Real-time data
+## Short Term — Make It Profitable (next 2 weeks)
 
-### 1. WebSocket streaming
-**Why:** The scalp strategy polls quotes every 15 seconds. At 0.15% targets, that's too slow. Streaming gives real-time tick data for instant TP/SL triggers.
+*Focus: the agent has tools but no intelligence about WHEN to use them.
+Regime awareness is the single highest-ROI improvement.*
 
-Use `streamerInfo` from Schwab user preferences (`wss://streamer-api.schwab.com/ws`).
+### S1. Fix Failing Test + Coverage
+- [ ] Fix test_total_exposure_cap (risk check ordering)
+- [ ] Add tests for each strategy (generate_signals + basic flow)
+- [ ] Target: 120+ tests (from 70)
+- [ ] GitHub Actions CI (ruff + pytest)
 
-**~400 lines** — `src/schwabagent/streaming.py`
+### S2. Earnings Calendar Avoidance
+- [ ] Build earnings calendar from Schwab `fundamental.lastEarningsDate` + SEC 8-K
+- [ ] Auto-reduce position size in 48h pre-earnings window
+- [ ] Auto-skip new entries in earnings window
+- [ ] Add earnings dates to Telegram daily digest
+- [ ] **~150 lines** — `src/schwabagent/earnings.py`
 
-### 2. Order fill tracking
-**Why:** We place market orders and assume the fill price equals the quoted price. Actual fills can differ, making TP/SL inaccurate.
+### S3. Intermarket Regime Model
+- [ ] 7-signal macro model from cross-asset prices (SPY, TLT, HYG, GLD, IWM, DXY, VIX)
+- [ ] Regime classification: Bull, Bear, Correction, Stagflation, Recovery, Risk-Off
+- [ ] Historical regime backtest (2000-2026) to validate signal accuracy
+- [ ] **~400 lines** — `src/schwabagent/intermarket.py`
 
-Poll `GET /accounts/{hash}/orders` after placement, update entry price, recalculate exit levels.
+### S4. Regime-Aware Strategy Weighting
+- [ ] Map each regime → strategy weight overrides:
+  - Bull: Momentum ↑, ETF Rotation ↑, Mean Reversion ↓
+  - Bear: Trend Following ↑, ETF Rotation (inverse ETFs), Momentum ↓
+  - Correction: Mean Reversion ↑, Scalp ↑, Momentum ↓
+  - Stagflation: Trend Following (commodities), Conviction Hold (pause)
+  - Risk-Off: All strategies reduce sizing 50%, ETF Rotation favors TLT/GLD
+- [ ] Integrate into runner.py position sizing
+- [ ] Telegram alert on regime changes
+- [ ] **~200 lines** — update `runner.py` + `config.py`
 
-**~150 lines** — update `schwab_client.py` + `strategies/etf_scalp.py`
-
-### 3. Cron scheduler
-**Why:** Replace manual `./run.sh loop` with persistent scheduled jobs. Survives restarts.
-
-```
-09:30  weekdays  → scalp starts
-09:35  weekdays  → daily scan + execute
-15:00  weekdays  → ETF rotation check
-15:45  weekdays  → scalp session close
-16:00  weekdays  → daily P&L → Telegram
-08:00  monday    → weekly report + dreamcycle
-```
-
-**~300 lines** — `src/schwabagent/scheduler.py`
-
----
-
-## Phase 2 — Intelligence
-
-### 4. Earnings calendar
-**Why:** Earnings reports cause 5-10% overnight moves. Auto-reduce or skip in 48-hour window.
-
-Use Schwab `fundamental.lastEarningsDate` + SEC 8-K scan for confirmed dates.
-
-**~150 lines** — `src/schwabagent/earnings.py`
-
-### 5. Intermarket regime model
-**Why:** Backtest proved no single strategy works in all regimes. The agent needs to detect the regime and weight strategies accordingly.
-
-7-signal macro model from cross-asset reference symbols (SPY, TLT, HYG, GLD, IWM). Port from rebalancer's `intermarket.py`.
-
-**~400 lines** — `src/schwabagent/intermarket.py`
-
-### 6. Regime-aware strategy weighting
-**Why:** In stagflation, trend following should dominate. In bull markets, momentum. The auto-tuner handles individual strategy tuning, but regime weighting handles the portfolio level.
-
-Map regime → strategy weight overrides. Feed into the runner's strategy execution order and position sizing.
-
-**~200 lines** — update `runner.py` + `config.py`
-
-### 7. Liquidity + dividend filters
-**Why:** Scalp needs tight spreads (skip illiquid ETFs). ETF rotation needs dividend awareness (ex-date timing).
-
-Use `fundamental.avg10DaysVolume` and `fundamental.nextDivExDate` from quotes.
-
-**~100 lines** — integrate into scalp + ETF rotation scans
+### S5. Liquidity + Dividend Filters
+- [ ] Scalp: skip symbols with avg volume < 1M or spread > 0.10%
+- [ ] ETF Rotation: factor in ex-dividend dates (avoid buying day before ex-date for tax)
+- [ ] Add volume and spread data to signal output
+- [ ] **~100 lines** — integrate into strategy scans
 
 ---
 
-## Phase 3 — Portfolio optimization
+## Medium Term — Portfolio Intelligence (1-3 months)
 
-### 8. Unified portfolio view
-**Why:** 5 accounts should be treated as one portfolio. Concentration, correlation, and risk need to be measured across accounts.
+*Focus: treat 5 accounts as one portfolio, optimize sizing, add new edges.*
 
-Aggregate positions across all accounts. Per-account constraints (cash vs margin, tax-advantaged vs taxable). Account-aware execution routing.
+### M1. Unified Portfolio View
+- [ ] Aggregate positions across all 5 accounts
+- [ ] Net exposure per symbol, per sector, per asset class
+- [ ] Account-type constraints:
+  - HSA: no wash sale concern, long-term focus
+  - Taxable: tax-lot awareness, wash sale tracking
+  - IRA: growth-focused, no tax on rotation
+- [ ] Per-account P&L + aggregate P&L
+- [ ] **~300 lines** — `src/schwabagent/portfolio.py`
 
-**~300 lines** — `src/schwabagent/portfolio.py`
+### M2. Portfolio Optimizer (MPT)
+- [ ] Mean-variance optimization via `pypfopt`
+- [ ] Strategies: Max Sharpe, Min Volatility, Risk Parity, HRP
+- [ ] Constraints: max position size, sector limits, min diversification
+- [ ] Rebalance recommendations with trade list
+- [ ] Integrate into runner: optimizer suggests target weights, strategies execute toward them
+- [ ] **~300 lines** — `src/schwabagent/optimizer.py`
 
-### 9. Portfolio optimizer (MPT)
-**Why:** Position sizing is naive (equal weight or fixed dollar). Mean-variance optimization improves risk-adjusted returns.
+### M3. Tax-Aware Execution
+- [ ] Route trades to optimal account (HSA for active, taxable for long-term)
+- [ ] Tax lot selection for sells (specific ID for tax-loss harvesting, FIFO default)
+- [ ] Wash sale window tracking across all 5 accounts (31-day lookback)
+- [ ] Year-end tax-loss harvesting sweep (identify losers, sell, replace with correlated ETF)
+- [ ] Estimated tax impact per trade in Telegram approval messages
+- [ ] **~250 lines** — update `trading_rules.py` + `runner.py`
 
-Max Sharpe, Min Volatility, Efficient Risk, HRP strategies. Uses `pypfopt`.
+### M4. Value / Fundamental Strategy
+- [ ] Screen for cheap + high-quality stocks using existing factor model
+- [ ] Entry: fundamental screen passes + technical confirmation (KAMA trend, RSI oversold)
+- [ ] Hold: weeks to months, re-evaluate on earnings or factor score change
+- [ ] Universe: S&P 500 stocks (use existing `data/sp500.csv`)
+- [ ] Backtest against 2000-2026 data
+- [ ] **~300 lines** — `src/schwabagent/strategies/value.py`
 
-**~300 lines** — `src/schwabagent/optimizer.py`
+### M5. Options Overlay (Covered Calls)
+- [ ] Start simple: covered call writing on ETF rotation holdings
+- [ ] Strike selection: 0.30 delta, 30-45 DTE, minimum $0.50 premium
+- [ ] Auto-roll when approaching expiration (7 DTE threshold)
+- [ ] Track premium collected as income
+- [ ] Greeks monitoring (delta, theta, gamma from Schwab options chain)
+- [ ] Protective puts on large positions during Risk-Off regime
+- [ ] **~500 lines** — `src/schwabagent/strategies/options_overlay.py`
 
-### 10. Tax-aware execution
-**Why:** HSA = no tax events. Taxable = wash sale risk, lot selection matters. IRA = growth-focused, no tax on rotation.
-
-Route trades to the optimal account. Select tax lots (FIFO, specific ID) for sells. Track wash sale windows across accounts.
-
-**~250 lines** — update `trading_rules.py` + `runner.py`
+### M6. Pairs Trading
+- [ ] Cointegration-based pair selection from ETF universe
+- [ ] Candidate pairs: XLF/KBE, XLE/OIH, QQQ/ARKK, GDX/GLD, TLT/IEF
+- [ ] Z-score entry/exit with mean-reversion logic
+- [ ] Market-neutral: dollar-neutral long/short
+- [ ] **~400 lines** — `src/schwabagent/strategies/pairs.py`
 
 ---
 
-## Phase 4 — Advanced strategies
+## Long Term — Autonomous Fund (3-12 months)
 
-### 11. Value / fundamental strategy
-**Why:** We have DCF, Graham Number, Piotroski, factor model — but no strategy uses them. A fundamental screen + technical entry would combine both lenses.
+*Focus: run this like a real portfolio with institutional-grade process.*
 
-Screen for cheap + high-quality stocks (factor model), then enter on technical confirmation (KAMA trend, RSI oversold). Hold for weeks/months.
+### L1. Web Dashboard
+- [ ] FastAPI + Jinja2 at localhost:5000
+- [ ] Pages: portfolio overview, ETF rankings, strategy signals, positions, P&L history
+- [ ] Risk dashboard: drawdown chart, exposure heatmap, regime indicator
+- [ ] Backtest viewer with parameter sweep results
+- [ ] SEC filing browser
+- [ ] Point & Figure chart viewer
+- [ ] Strategy config editor (adjust parameters without code changes)
+- [ ] **~500 lines** — `src/schwabagent/web/`
 
-**~300 lines** — `src/schwabagent/strategies/value.py`
+### L2. Advanced Regime Intelligence
+- [ ] Macro factor model (yield curve slope, credit spreads, ISM PMI, unemployment claims)
+- [ ] Regime transition probabilities (hidden Markov model)
+- [ ] Forward-looking regime signals (options skew, VIX term structure)
+- [ ] Sector rotation model (early/mid/late cycle sector preferences)
+- [ ] International regime signals (DXY, EM spreads, China PMI)
 
-### 12. Options overlay
-**Why:** Schwab returns full options chain with greeks. Covered calls on held positions generate income, protective puts limit downside.
+### L3. Smarter Self-Improvement
+- [ ] Walk-forward optimization on live data (monthly recalibration of all strategy parameters)
+- [ ] Strategy tournament: run all strategies in paper mode, promote top performers to live
+- [ ] Genetic algorithm for strategy parameter evolution
+- [ ] LLM-powered trade review: "Why did this trade lose? What signal was wrong?"
+- [ ] Correlation analysis between strategies (reduce correlated bets)
 
-Start with covered call writing on ETF rotation holdings. Use delta/theta to select strikes.
+### L4. Advanced Order Execution
+- [ ] TWAP/VWAP for larger positions (>$5K)
+- [ ] Limit order management: place limits, adjust, cancel stale
+- [ ] Dark pool / alternative routing awareness (TDA vs Schwab routing quality)
+- [ ] Slippage tracking: expected fill vs actual fill, per-strategy slippage cost
 
-**~500 lines** — `src/schwabagent/strategies/options_overlay.py`
+### L5. Risk Evolution
+- [ ] VaR model (historical simulation across portfolio)
+- [ ] Stress testing: 2008, 2020 March, 2022 bear scenarios
+- [ ] Maximum correlation constraint (don't hold 5 correlated tech stocks)
+- [ ] Tail risk hedging (auto-buy VIX calls or put spreads when risk-off)
+- [ ] Intraday risk monitoring (not just scan-time)
 
-### 13. Pairs / spread trading
-**Why:** Market-neutral strategy profiting from relative moves between correlated ETFs.
-
-Cointegration-based entry, mean-reversion exit. Lower correlation to market direction.
-
-**~400 lines** — `src/schwabagent/strategies/pairs.py`
+### L6. Reporting & Compliance
+- [ ] Daily performance email/Telegram with attribution (which strategy, which position drove P&L)
+- [ ] Monthly tearsheet (Sharpe, Sortino, max drawdown, win rate, avg win/loss)
+- [ ] Yearly tax report export (cost basis, realized gains/losses, wash sale adjustments)
+- [ ] Trade journal: searchable log of every trade with rationale from LLM
+- [ ] Benchmark comparison (vs SPY, vs 60/40)
 
 ---
 
-## Phase 5 — Interface
+## Strategy Pipeline (research before building)
 
-### 14. Web dashboard
-FastAPI + Jinja2 at `http://localhost:5000`.
+*Evaluate these. Pull into medium term when backtests show edge.*
 
-Pages: portfolio overview, ETF rankings, signals, scalp positions, P&L, risk state, P&F charts, SEC filings, feedback/calibration.
-
-**~500 lines** — `src/schwabagent/web/`
-
-### 15. Telegram UX polish
-Wire `request_approval()` into all live strategies. Add inline position management (close, adjust TP/SL). Daily digest formatting. P&F chart images via Telegram.
-
-**~200 lines** — update strategies + `telegram.py`
+- [ ] **Sector momentum:** Monthly rotation across 11 SPDR sector ETFs based on 3/6/12 month returns
+- [ ] **Dividend capture:** Buy before ex-date, sell after, repeat across high-yield universe
+- [ ] **Volatility targeting:** Scale position sizes to target constant portfolio volatility (e.g., 12% annualized)
+- [ ] **Gap trading:** Identify overnight gaps, trade mean-reversion in first 30 minutes
+- [ ] **Seasonal patterns:** "Sell in May", Santa Claus rally, January effect — backtest and automate
+- [ ] **LEAPS/Poor man's covered calls:** Use long-dated options instead of stock for capital efficiency
+- [ ] **Iron condor selling:** On low-vol ETFs, sell monthly iron condors for theta decay
 
 ---
 
@@ -186,11 +220,11 @@ Wire `request_approval()` into all live strategies. Add inline position manageme
 
 ---
 
-## Dependency additions by phase
+## Design Principles
 
-| Phase | New dependencies |
-|-------|-----------------|
-| 1 — Streaming | schwab-py streaming (built-in) |
-| 1 — Scheduler | `croniter` |
-| 3 — Optimizer | `pypfopt` |
-| 5 — Dashboard | `jinja2` (fastapi/uvicorn already in deps) |
+1. **DRY_RUN first** — every feature works in simulation before going live
+2. **Regime awareness** — no strategy should run blind to macro conditions
+3. **Account-aware** — every trade considers which of 5 accounts to use
+4. **Self-correcting** — the feedback loop throttles, pauses, and restores automatically
+5. **Telegram approval** — no live trade without human confirmation (until trust is earned)
+6. **Tax efficiency** — route to the right account, harvest losses, avoid wash sales
