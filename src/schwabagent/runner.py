@@ -14,6 +14,7 @@ from schwabagent.config import Config
 from schwabagent.persistence import StateStore
 from schwabagent.risk import RiskManager
 from schwabagent.schwab_client import AccountSummary, SchwabClient
+from schwabagent.intermarket import RegimeModel, regime_sizing_factor
 from schwabagent.strategies.base import Strategy
 from schwabagent.strategies.composite import CompositeStrategy
 from schwabagent.strategies.etf_rotation import ETFRotationStrategy
@@ -41,6 +42,8 @@ class AgentRunner:
         self.telegram = self._init_telegram()
         self.feedback = self._init_feedback()
         self.strategies: list[Strategy] = self._build_strategies()
+        self.regime_model = RegimeModel(config)
+        self.current_regime = None
         self.autotuner = self._init_autotuner()
         self.dreamcycle = self._init_dreamcycle()
         self.order_tracker = self._init_order_tracker()
@@ -329,6 +332,37 @@ class AgentRunner:
 
         self._inject_account(account)
 
+        # ── Regime detection ───────────────────────────────────────────────
+        regime_result = None
+        if self.config.REGIME_ENABLED:
+            try:
+                # Fetch quotes for reference symbols
+                ref_quotes = self.client.get_quotes(self.config.regime_reference_symbols)
+                # Try to get price histories for SMA/ROC signals
+                ref_histories = {}
+                for sym in self.config.regime_reference_symbols:
+                    try:
+                        hist = self.client.get_ohlcv(sym, period_type="year", period=1)
+                        if hist is not None and not hist.empty:
+                            ref_histories[sym] = hist
+                    except Exception:
+                        pass
+                regime_result = self.regime_model.detect(ref_quotes, ref_histories or None)
+                self.current_regime = regime_result.regime
+
+                if regime_result.changed:
+                    prev = regime_result.previous_regime
+                    msg = (
+                        f"Market regime changed: {prev.label() if prev else '?'} → "
+                        f"{regime_result.regime.label()} "
+                        f"(confidence: {regime_result.confidence:.0%})"
+                    )
+                    logger.warning(msg)
+                    if self.telegram:
+                        self.telegram.send_alert(f"🔄 {msg}")
+            except Exception as e:
+                logger.error("Regime detection failed: %s", e)
+
         all_trades: list[dict] = []
         for strategy in self.strategies:
             if self.risk.is_killed():
@@ -346,6 +380,20 @@ class AgentRunner:
                     # Apply auto-tuner sizing adjustment
                     if tuner_state.sizing_factor < 1.0 and t.get("side") == "BUY":
                         t["_autotune_sizing"] = tuner_state.sizing_factor
+                    # Apply regime sizing adjustment
+                    if regime_result and t.get("side") == "BUY":
+                        factor = regime_sizing_factor(regime_result.regime, strategy.name)
+                        t["_regime_sizing"] = factor
+                        if factor != 1.0 and "quantity" in t:
+                            original_qty = t["quantity"]
+                            t["quantity"] = max(1, int(t["quantity"] * factor))
+                            if t["quantity"] != original_qty:
+                                logger.info(
+                                    "[regime] %s %s qty %d→%d (factor=%.2f, regime=%s)",
+                                    strategy.name, t.get("symbol"),
+                                    original_qty, t["quantity"],
+                                    factor, regime_result.regime.label(),
+                                )
                     # Record to feedback loop
                     if t.get("side") == "SELL":
                         self.feedback.resolve_from_trade(t)
@@ -388,6 +436,48 @@ class AgentRunner:
 
     # ── scan_only ─────────────────────────────────────────────────────────────
 
+    def get_regime(self) -> dict | None:
+        """Return current regime info as a dict, or None if disabled."""
+        if not self.config.REGIME_ENABLED:
+            return None
+        try:
+            ref_quotes = self.client.get_quotes(self.config.regime_reference_symbols)
+            ref_histories = {}
+            for sym in self.config.regime_reference_symbols:
+                try:
+                    hist = self.client.get_ohlcv(sym, period_type="year", period=1)
+                    if hist is not None and not hist.empty:
+                        ref_histories[sym] = hist
+                except Exception:
+                    pass
+            result = self.regime_model.detect(ref_quotes, ref_histories or None)
+            self.current_regime = result.regime
+            return result.to_dict()
+        except Exception as e:
+            logger.error("Regime detection failed: %s", e)
+            return None
+
+    def display_regime(self) -> None:
+        """Display current regime in rich terminal format."""
+        if not self.config.REGIME_ENABLED:
+            self.console.print("[yellow]Regime detection is disabled[/yellow]")
+            return
+        try:
+            ref_quotes = self.client.get_quotes(self.config.regime_reference_symbols)
+            ref_histories = {}
+            for sym in self.config.regime_reference_symbols:
+                try:
+                    hist = self.client.get_ohlcv(sym, period_type="year", period=1)
+                    if hist is not None and not hist.empty:
+                        ref_histories[sym] = hist
+                except Exception:
+                    pass
+            result = self.regime_model.detect(ref_quotes, ref_histories or None)
+            self.current_regime = result.regime
+            RegimeModel.display_regime(result)
+        except Exception as e:
+            self.console.print(f"[red]Regime detection failed: {e}[/red]")
+
     def scan_only(self) -> list[dict]:
         """Run scan phase only across all strategies — no execution.
 
@@ -396,6 +486,9 @@ class AgentRunner:
         """
         account = self._get_account()
         self._inject_account(account)
+
+        # Include regime in scan output
+        regime_info = self.get_regime() if self.config.REGIME_ENABLED else None
 
         seen: dict[str, dict] = {}
         all_signals: list[dict] = []

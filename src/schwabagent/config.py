@@ -120,6 +120,10 @@ class Config(BaseSettings):
     SCALP_EMA_SLOW: int = 21                  # slow EMA for trend filter
     SCALP_SCAN_INTERVAL_SECONDS: int = 15     # how often to check for entries
 
+    # ── Intermarket regime detection ──────────────────────────────────────
+    REGIME_ENABLED: bool = True
+    REGIME_REFERENCE_SYMBOLS: str = "SPY,TLT,HYG,GLD,IWM,UUP,VIXY"
+
     # ── State / logging ───────────────────────────────────────────────────
     STATE_DIR: str = "~/.schwab-agent"
     LOG_LEVEL: str = "INFO"
@@ -168,6 +172,10 @@ class Config(BaseSettings):
         return [s.strip().upper() for s in self.TREND_FOLLOWING_SYMBOLS.split(",") if s.strip()]
 
     @property
+    def regime_reference_symbols(self) -> list[str]:
+        return [s.strip().upper() for s in self.REGIME_REFERENCE_SYMBOLS.split(",") if s.strip()]
+
+    @property
     def all_symbols(self) -> list[str]:
         """All unique symbols across watchlist and all strategy universes."""
         syms = set(self.watchlist)
@@ -177,6 +185,8 @@ class Config(BaseSettings):
         syms.update(self.etf_universe)
         syms.update(self.scalp_universe)
         syms.update(self.conviction_symbols)
+        if self.REGIME_ENABLED:
+            syms.update(self.regime_reference_symbols)
         return sorted(syms)
 
     @property
