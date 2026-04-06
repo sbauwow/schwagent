@@ -135,17 +135,17 @@ class TestCanBuy:
         assert "cash" in reason.lower() or "Insufficient" in reason
 
     def test_total_exposure_cap(self, risk):
-        # Build account with positions near the cap
+        # Build account with positions near the $50k cap
         positions = [
-            Position("SPY", 400, 48_000.0, 100.0, 0.0, 0.48),  # $48k of $50k cap used
+            Position("SPY", 400, 49_000.0, 100.0, 0.0, 0.48),  # $49k of $50k cap used
         ]
         account = _make_account(
             total_value=200_000.0,
             cash=100_000.0,
             positions=positions,
         )
-        # 15 shares @ $300 = $4500 → exposure would be $52500 > $50000
-        allowed, reason = risk.can_buy("MSFT", 15, 300.0, account)
+        # 10 shares @ $150 = $1500 (under $2000 max order) → exposure $50500 > $50000
+        allowed, reason = risk.can_buy("MSFT", 10, 150.0, account)
         assert not allowed
         assert "exposure" in reason.lower() or "cap" in reason.lower()
 
