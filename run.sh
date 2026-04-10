@@ -523,6 +523,130 @@ else:
 "
 }
 
+cmd_swarm() {
+    # Multi-agent committee workflows (ported from vibe-trading).
+    # Usage:
+    #   ./run.sh swarm                        → list available presets
+    #   ./run.sh swarm <preset>               → describe a preset
+    #   ./run.sh swarm <preset> key=val ...   → execute a preset
+    #
+    # Example:
+    #   ./run.sh swarm investment_committee target=SPY
+    #   ./run.sh swarm technical_analysis_panel target=AAPL timeframe=daily
+    PRESET="${1:-}"
+    shift || true
+
+    if [ -z "$PRESET" ]; then
+        $VENV -c "
+from schwabagent.intelligence.swarm import list_presets, load_preset_by_name
+presets = list_presets()
+if not presets:
+    print('  No presets found.')
+else:
+    print(f'\n  {len(presets)} swarm presets available:\n')
+    for name in presets:
+        p = load_preset_by_name(name)
+        print(f'  ${CYAN}{p.name}${NC}')
+        print(f'    {p.title}')
+        print(f'    {p.description}')
+        print()
+    print('  Usage: ./run.sh swarm <preset> key=value ...')
+    print()
+"
+        return
+    fi
+
+    # If no key=value args, just describe the preset
+    if [ $# -eq 0 ]; then
+        $VENV -c "
+from schwabagent.intelligence.swarm import load_preset_by_name, topological_layers
+p = load_preset_by_name('${PRESET}')
+print(f'\n  {p.title}')
+print(f'  {p.description}\n')
+print(f'  Agents ({len(p.agents)}):')
+for a in p.agents:
+    print(f'    - {a.id:<24} {a.role}')
+print(f'\n  Tasks ({len(p.tasks)}):')
+for t in p.tasks:
+    deps = ', '.join(t.depends_on) if t.depends_on else '(no deps)'
+    print(f'    - {t.id:<24} agent={t.agent_id:<24} deps=[{deps}]')
+layers = topological_layers(p.tasks)
+print(f'\n  Execution layers: {len(layers)}')
+for i, layer in enumerate(layers):
+    print(f'    layer {i+1}: {layer}')
+print(f'\n  Variables:')
+for v in p.variables:
+    req = 'required' if v.get('required') else f\"default='{v.get('default', '')}'\"
+    print(f\"    - {v['name']:<16} ({req}) — {v.get('description', '')}\")
+print()
+"
+        return
+    fi
+
+    # Execute: build user_vars from key=value args
+    VARS_PY=""
+    for arg in "$@"; do
+        KEY="${arg%%=*}"
+        VAL="${arg#*=}"
+        VARS_PY="${VARS_PY}    '${KEY}': '''${VAL}''',\n"
+    done
+
+    $VENV -c "
+from schwabagent.intelligence.swarm import SwarmRuntime, load_preset_by_name
+from schwabagent.config import Config
+from schwabagent.llm import LLMClient
+
+config = Config()
+llm = LLMClient(
+    provider=config.LLM_PROVIDER,
+    model=config.LLM_MODEL or config.OLLAMA_MODEL,
+    api_key=config.LLM_API_KEY or config.ANTHROPIC_API_KEY or config.OPENAI_API_KEY,
+    base_url=config.LLM_BASE_URL or config.OLLAMA_HOST,
+    timeout=config.LLM_TIMEOUT or config.OLLAMA_TIMEOUT,
+    temperature=config.LLM_TEMPERATURE,
+    max_tokens=config.LLM_MAX_TOKENS,
+)
+
+if not llm.is_available():
+    print(f'  LLM provider {llm.provider} not available — check .env')
+    import sys; sys.exit(1)
+
+user_vars = {
+$(printf "${VARS_PY}")
+}
+
+preset = load_preset_by_name('${PRESET}')
+print(f'\n  Running {preset.title}...\n')
+for k, v in user_vars.items():
+    print(f'    {k} = {v}')
+print()
+
+runtime = SwarmRuntime(llm)
+run = runtime.execute(preset, user_vars=user_vars)
+
+print()
+print(f'  Status: {run.status.value}')
+print(f'  Tasks completed: {sum(1 for t in run.tasks if t.status.value == \"completed\")}/{len(run.tasks)}')
+print()
+
+for task in run.tasks:
+    print(f'  ─── {task.id} ({task.agent_id}) ───')
+    if task.error:
+        print(f'  ERROR: {task.error}')
+    elif task.summary:
+        # Indent the summary
+        for line in task.summary.split('\n'):
+            print(f'    {line}')
+    print()
+
+if run.final_report:
+    print('  ══════ FINAL REPORT ══════')
+    for line in run.final_report.split('\n'):
+        print(f'  {line}')
+    print()
+"
+}
+
 # ---------- main ----------
 
 case "${1:-once}" in
@@ -541,8 +665,9 @@ case "${1:-once}" in
     sec)     cmd_sec "$@" ;;
     web)     cmd_web ;;
     ref)     shift; cmd_ref "$@" ;;
+    swarm)   shift; cmd_swarm "$@" ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|dream|sec|web|ref]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|dream|sec|web|ref|swarm]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -559,5 +684,6 @@ case "${1:-once}" in
         echo "  sec      SEC filings (e.g. ./run.sh sec AAPL [filings|analyze|risks|compare|scan])"
         echo "  web      Start web dashboard (http://localhost:8898)"
         echo "  ref      Reference skill library (./run.sh ref [skill-name])"
+        echo "  swarm    Multi-agent committee workflows (./run.sh swarm [preset] [key=val ...])"
         ;;
 esac
