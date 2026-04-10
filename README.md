@@ -7,6 +7,7 @@ Beyond core trading, the agent includes:
 - **Web dashboard** — real-time view of accounts, positions, trades, and P&L
 - **Backtest validation** — Monte Carlo, Bootstrap Sharpe CI, Walk-Forward
 - **Options analysis** — Black-Scholes + Greeks, implied vol solver, multi-leg payoff analysis
+- **Portfolio optimization** — mean-variance, HRP, and discrete allocation via PyPortfolioOpt
 - **Reference skill library** — 23 curated analysis methodologies for the LLM overlay
 - **Swarm workflows** — DAG-based multi-agent committees (investment, TA panel, ETF allocation)
 - **Telegram bot** — push alerts, `/status` `/pnl` `/kill`, trade approval
@@ -52,6 +53,7 @@ $EDITOR .env   # set Schwab credentials at minimum
 | `./run.sh backtest <strategy>` | Historical backtest against CSV data |
 | `./run.sh validate <strategy>` | Backtest + Monte Carlo + Bootstrap + Walk-Forward validation |
 | `./run.sh options price\|iv\|strategy` | Black-Scholes pricing, IV solver, multi-leg strategy analysis |
+| `./run.sh optimize <tickers>` | Portfolio optimization (max Sharpe, min vol, HRP) via PyPortfolioOpt |
 | `./run.sh web` | Web dashboard at http://localhost:8898 |
 | `./run.sh ref [skill]` | Reference skill library for the LLM overlay |
 | `./run.sh swarm [preset]` | Multi-agent committee workflows |
@@ -413,6 +415,95 @@ print(strategy_metrics(legs, spot_range=(440, 560)))
 
 ---
 
+## Portfolio optimization
+
+Wrapper around [PyPortfolioOpt](https://github.com/robertmartin8/PyPortfolioOpt) in
+`src/schwabagent/portfolio_optimizer.py`. Supports mean-variance, hierarchical
+risk parity, and discrete share allocation — feeds off Schwab historical OHLCV
+so any universe you have market-data access to can be optimized.
+
+### Supported objectives
+
+| Method | Description |
+|--------|-------------|
+| `max_sharpe` | Maximum Sharpe ratio on the efficient frontier |
+| `min_volatility` | Minimum variance portfolio |
+| `efficient_risk` | Max return for a target volatility |
+| `efficient_return` | Min volatility for a target return |
+| `hrp` | Hierarchical risk parity (Lopez de Prado) |
+
+Expected returns estimators: `mean_historical`, `ema_historical`, `capm`.
+Risk models: `sample_cov`, `ledoit_wolf`, `exp_cov`.
+
+### CLI
+
+```bash
+./run.sh optimize SPY,QQQ,IWM,EFA,EEM,TLT,GLD,VNQ
+./run.sh optimize SPY,QQQ,TLT,GLD method=min_volatility capital=50000
+./run.sh optimize SPY,QQQ,TLT,GLD method=hrp days=500
+```
+
+Output includes continuous weights, annualized return/vol/Sharpe, and a
+discrete share allocation rounded to whole shares with leftover cash:
+
+```
+=== Portfolio Optimization: max_sharpe ===
+
+Expected return:      +14.23%
+Expected volatility:  11.45%
+Sharpe ratio:         +0.893
+
+Continuous weights:
+  QQQ      42.18%
+  GLD      28.56%
+  TLT      18.92%
+  SPY      10.34%
+
+Discrete allocation ($100,000 capital):
+  QQQ        86 shares
+  GLD       123 shares
+  TLT       191 shares
+  SPY        17 shares
+  Leftover cash:  $214.56
+```
+
+### Python API
+
+```python
+from schwabagent.portfolio_optimizer import optimize_portfolio, format_report
+from schwabagent.schwab_client import SchwabClient
+from schwabagent.config import Config
+
+client = SchwabClient(Config())
+client.authenticate()
+
+tickers = ["SPY", "QQQ", "IWM", "EFA", "TLT", "GLD", "VNQ"]
+prices = {t: client.get_ohlcv(t, days=365) for t in tickers}
+
+result = optimize_portfolio(
+    prices,
+    method="max_sharpe",
+    returns_model="ema_historical",
+    risk_model="ledoit_wolf",
+    total_value=100_000,
+    risk_free_rate=0.04,
+)
+
+print(format_report(result))
+# result.weights             → {"SPY": 0.10, "QQQ": 0.42, ...}
+# result.discrete_allocation → {"SPY": 17, "QQQ": 86, ...}
+# result.leftover_cash       → 214.56
+# result.sharpe_ratio        → 0.893
+```
+
+The dict-of-OHLCV input format matches what `SchwabClient.get_ohlcv()`
+returns, so integration with the rest of the agent is zero-friction.
+HRP doesn't require a `returns_model` or `risk_model` (it uses raw
+daily returns and hierarchical clustering), and HRP skips the
+efficient-frontier optimizer entirely.
+
+---
+
 ## Backtest validation
 
 Statistical tests that quantify how much of a strategy's backtest
@@ -527,6 +618,7 @@ src/schwabagent/
   backtest.py            Historical backtester
   backtest_validation.py Monte Carlo + Bootstrap + Walk-Forward validation
   options.py             Black-Scholes pricing, IV solver, multi-leg strategies
+  portfolio_optimizer.py PyPortfolioOpt wrapper (mean-variance, HRP, discrete alloc)
   cli.py                 CLI entry point
   strategies/
     base.py              Abstract strategy interface + Signal enum
@@ -562,7 +654,7 @@ docs/
 
 ```bash
 uv sync --dev
-uv run pytest          # run tests (468 tests, all passing)
+uv run pytest          # run tests (490 tests, all passing)
 uv run ruff check src  # lint
 ```
 

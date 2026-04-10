@@ -283,6 +283,95 @@ for strat in strategies:
 "
 }
 
+cmd_optimize() {
+    # Portfolio optimization via PyPortfolioOpt.
+    # Usage:
+    #   ./run.sh optimize <tickers>                             # max Sharpe, $100k, 1yr data
+    #   ./run.sh optimize SPY,QQQ,TLT,GLD method=min_volatility
+    #   ./run.sh optimize SPY,QQQ,TLT,GLD capital=50000 days=250
+    #   ./run.sh optimize SPY,QQQ,TLT,GLD method=hrp
+    TICKERS="${2:-}"
+    shift 2 2>/dev/null || true
+
+    if [ -z "$TICKERS" ]; then
+        echo ""
+        echo "  Portfolio optimization via PyPortfolioOpt"
+        echo ""
+        echo -e "  ${CYAN}./run.sh optimize <tickers> [method=<m>] [capital=<amount>] [days=<n>] [rate=<r>]${NC}"
+        echo ""
+        echo "    tickers   Comma-separated symbols (e.g. SPY,QQQ,TLT,GLD)"
+        echo "    method    max_sharpe (default) | min_volatility | hrp"
+        echo "    capital   Total portfolio value in dollars (default: 100000)"
+        echo "    days      Calendar days of history to fetch (default: 365)"
+        echo "    rate      Risk-free rate as decimal (default: 0.04)"
+        echo ""
+        echo "  Example:"
+        echo "    ./run.sh optimize SPY,QQQ,IWM,EFA,TLT,GLD,VNQ method=max_sharpe capital=250000"
+        echo ""
+        return
+    fi
+
+    METHOD="max_sharpe"
+    CAPITAL="100000"
+    DAYS="365"
+    RATE="0.04"
+    for arg in "$@"; do
+        KEY="${arg%%=*}"
+        VAL="${arg#*=}"
+        case "$KEY" in
+            method)  METHOD="$VAL" ;;
+            capital) CAPITAL="$VAL" ;;
+            days)    DAYS="$VAL" ;;
+            rate)    RATE="$VAL" ;;
+        esac
+    done
+
+    echo ""
+    echo -e "${CYAN}=== Portfolio optimization: ${TICKERS} (${METHOD}) ===${NC}"
+    echo ""
+
+    $VENV -c "
+from schwabagent.config import Config
+from schwabagent.schwab_client import SchwabClient
+from schwabagent.portfolio_optimizer import optimize_portfolio, format_report
+
+config = Config()
+client = SchwabClient(config)
+if not client.authenticate():
+    print('  Schwab API not authenticated — run ./run.sh enroll first.')
+    import sys; sys.exit(1)
+
+tickers = [t.strip().upper() for t in '${TICKERS}'.split(',') if t.strip()]
+days = int('${DAYS}')
+
+print(f'  Fetching {days}d of history for {len(tickers)} symbols...')
+prices = {}
+for t in tickers:
+    try:
+        df = client.get_ohlcv(t, days=days)
+        if df is not None and not df.empty:
+            prices[t] = df
+            print(f'    {t:<6} ok ({len(df)} bars)')
+        else:
+            print(f'    {t:<6} ${RED}empty${NC}')
+    except Exception as e:
+        print(f'    {t:<6} ${RED}error: {e}${NC}')
+
+if len(prices) < 2:
+    print('  Not enough data to optimize.')
+    import sys; sys.exit(1)
+
+print()
+result = optimize_portfolio(
+    prices,
+    method='${METHOD}',
+    total_value=float('${CAPITAL}'),
+    risk_free_rate=float('${RATE}'),
+)
+print(format_report(result))
+"
+}
+
 cmd_options() {
     # Options pricing and strategy analysis.
     # Usage:
@@ -898,13 +987,14 @@ case "${1:-once}" in
     backtest) cmd_backtest "$@" ;;
     validate) cmd_validate "$@" ;;
     options)  cmd_options "$@" ;;
+    optimize) cmd_optimize "$@" ;;
     dream)   cmd_dream ;;
     sec)     cmd_sec "$@" ;;
     web)     cmd_web ;;
     ref)     shift; cmd_ref "$@" ;;
     swarm)   shift; cmd_swarm "$@" ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|validate|options|dream|sec|web|ref|swarm]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|validate|options|optimize|dream|sec|web|ref|swarm]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -919,6 +1009,7 @@ case "${1:-once}" in
         echo "  backtest Run strategy backtest (e.g. ./run.sh backtest momentum 2020-01-01 2024-12-31)"
         echo "  validate Backtest + statistical validation (Monte Carlo + Bootstrap + Walk-Forward)"
         echo "  options  Options pricing (price|iv|strategy — Black-Scholes, IV solver, multi-leg)"
+        echo "  optimize Portfolio optimization via PyPortfolioOpt (max Sharpe, min vol, HRP)"
         echo "  dream    Run one dreamcycle (autonomous research + calibration)"
         echo "  sec      SEC filings (e.g. ./run.sh sec AAPL [filings|analyze|risks|compare|scan])"
         echo "  web      Start web dashboard (http://localhost:8898)"

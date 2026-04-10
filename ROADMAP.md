@@ -4,7 +4,7 @@ Last updated: 2026-04-10
 
 ## Current State
 
-14k+ LOC Python, 468 tests passing, 7 strategies, 5 Schwab accounts connected.
+14k+ LOC Python, 490 tests passing, 7 strategies, 5 Schwab accounts connected.
 
 **What works today:**
 - Dual Schwab API (Account + Market Data), OAuth2 enrolled
@@ -17,6 +17,7 @@ Last updated: 2026-04-10
 - Backtesting with parameter sweep (800-run optimization)
 - **Backtest validation** — Monte Carlo, Bootstrap Sharpe CI, Walk-Forward
 - **Options analysis** — Black-Scholes pricing + Greeks, implied vol solver, multi-leg strategy builders (iron condor, spreads, straddles, butterflies, covered calls)
+- **Portfolio optimization** — PyPortfolioOpt wrapper with max Sharpe, min volatility, hierarchical risk parity, efficient frontier, discrete share allocation, and pluggable returns/risk models (mean, EMA, CAPM, sample cov, Ledoit-Wolf, exp cov)
 - WebSocket streaming, order fill tracking, cron scheduler
 - Telegram bot (alerts, commands, trade approval gate)
 - Multi-provider LLM (Ollama, Anthropic, OpenAI)

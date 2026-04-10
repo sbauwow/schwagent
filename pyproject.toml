@@ -21,6 +21,7 @@ dependencies = [
     "edgartools>=5.0.0",
     "beautifulsoup4>=4.12.0",
     "croniter>=1.4.0",
+    "pyportfolioopt>=1.5.5",
 ]
 
 [project.scripts]
