@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Schwab Agent</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <h1><span>Schwab</span> Agent</h1>
+  <div class="header-right">
+    <span><span class="status-dot" id="ws-dot"></span><span id="ws-status">Connecting...</span></span>
+    <button class="btn" id="refresh-btn" onclick="refreshAll()">Refresh</button>
+  </div>
+</header>
+
+<nav class="tabs">
+  <div class="tab active" data-tab="dashboard">Dashboard</div>
+  <div class="tab" data-tab="positions">Positions</div>
+  <div class="tab" data-tab="trades">Trades</div>
+  <div class="tab" data-tab="pnl">P&L</div>
+</nav>
+
+<!-- ── Dashboard ──────────────────────────────────────────────── -->
+<div class="tab-panel active" id="panel-dashboard">
+  <div class="kpi-grid" id="kpi-grid"></div>
+  <div class="accounts-grid" id="accounts-grid"></div>
+  <div class="section" id="allocation-section" style="display:none">
+    <div class="section-title">Portfolio Allocation</div>
+    <div class="alloc-bar" id="alloc-bar"></div>
+    <div class="alloc-legend" id="alloc-legend"></div>
+  </div>
+</div>
+
+<!-- ── Positions ──────────────────────────────────────────────── -->
+<div class="tab-panel" id="panel-positions">
+  <div class="section">
+    <div class="section-title">All Positions</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Symbol</th>
+          <th class="text-right">Qty</th>
+          <th class="text-right">Avg Price</th>
+          <th class="text-right">Mkt Value</th>
+          <th class="text-right">P&L</th>
+          <th class="text-right">Weight</th>
+        </tr>
+      </thead>
+      <tbody id="positions-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Trades ─────────────────────────────────────────────────── -->
+<div class="tab-panel" id="panel-trades">
+  <div class="section">
+    <div class="section-title">Recent Trades</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Strategy</th>
+          <th>Symbol</th>
+          <th>Side</th>
+          <th class="text-right">Qty</th>
+          <th class="text-right">Price</th>
+          <th class="text-right">Value</th>
+          <th>Mode</th>
+        </tr>
+      </thead>
+      <tbody id="trades-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── P&L ────────────────────────────────────────────────────── -->
+<div class="tab-panel" id="panel-pnl">
+  <div class="kpi-grid" id="pnl-kpi-grid"></div>
+  <div class="section">
+    <div class="section-title">Strategy Performance</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Strategy</th>
+          <th class="text-right">Trades</th>
+          <th class="text-right">Wins</th>
+          <th class="text-right">Losses</th>
+          <th class="text-right">Win Rate</th>
+          <th class="text-right">Realized P&L</th>
+        </tr>
+      </thead>
+      <tbody id="pnl-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

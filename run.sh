@@ -10,6 +10,7 @@
 #   ./run.sh live         REAL MONEY — places actual orders on Schwab
 #   ./run.sh pnl          Show P&L summary by strategy
 #   ./run.sh status       Check Schwab connectivity + agent config
+#   ./run.sh web          Start web dashboard (http://localhost:8898)
 #
 
 set -e
@@ -498,6 +499,11 @@ print_pf_chart(
 "
 }
 
+cmd_web() {
+    echo -e "\n${CYAN}Starting web dashboard on port 8898...${NC}\n"
+    $VENV -m schwabagent.cli --web
+}
+
 # ---------- main ----------
 
 case "${1:-once}" in
@@ -514,8 +520,9 @@ case "${1:-once}" in
     backtest) cmd_backtest "$@" ;;
     dream)   cmd_dream ;;
     sec)     cmd_sec "$@" ;;
+    web)     cmd_web ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|dream|sec]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|dream|sec|web]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -530,5 +537,6 @@ case "${1:-once}" in
         echo "  backtest Run strategy backtest (e.g. ./run.sh backtest momentum 2020-01-01 2024-12-31)"
         echo "  dream    Run one dreamcycle (autonomous research + calibration)"
         echo "  sec      SEC filings (e.g. ./run.sh sec AAPL [filings|analyze|risks|compare|scan])"
+        echo "  web      Start web dashboard (http://localhost:8898)"
         ;;
 esac

@@ -25,6 +25,8 @@ def main() -> None:
     parser.add_argument("--strategies", type=str, default=None, help="Comma-separated strategies to run")
     parser.add_argument("--pnl", action="store_true", help="Show P&L summary and exit")
     parser.add_argument("--status", action="store_true", help="Show agent status and exit")
+    parser.add_argument("--web", action="store_true", help="Start the web dashboard")
+    parser.add_argument("--port", type=int, default=8898, help="Web dashboard port (default: 8898)")
 
     args = parser.parse_args()
 
@@ -55,6 +57,13 @@ def main() -> None:
             console.print(f"  [red]✗[/red] {e}")
         if not config.DRY_RUN:
             sys.exit(1)
+
+    # ── Web dashboard ─────────────────────────────────────────────────────
+
+    if args.web:
+        from schwabagent.web.app import run_server
+        run_server(config, port=args.port)
+        return
 
     # ── Status ─────────────────────────────────────────────────────────────
 
