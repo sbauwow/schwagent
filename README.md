@@ -8,6 +8,7 @@ Beyond core trading, the agent includes:
 - **Backtest validation** — Monte Carlo, Bootstrap Sharpe CI, Walk-Forward
 - **Options analysis** — Black-Scholes + Greeks, implied vol solver, multi-leg payoff analysis
 - **Portfolio optimization** — mean-variance, HRP, and discrete allocation via PyPortfolioOpt
+- **Technical indicators** — 35+ trend/momentum/volatility/volume indicators via the `ta` library
 - **Reference skill library** — 23 curated analysis methodologies for the LLM overlay
 - **Swarm workflows** — DAG-based multi-agent committees (investment, TA panel, ETF allocation)
 - **Telegram bot** — push alerts, `/status` `/pnl` `/kill`, trade approval
@@ -54,6 +55,7 @@ $EDITOR .env   # set Schwab credentials at minimum
 | `./run.sh validate <strategy>` | Backtest + Monte Carlo + Bootstrap + Walk-Forward validation |
 | `./run.sh options price\|iv\|strategy` | Black-Scholes pricing, IV solver, multi-leg strategy analysis |
 | `./run.sh optimize <tickers>` | Portfolio optimization (max Sharpe, min vol, HRP) via PyPortfolioOpt |
+| `./run.sh ta [list\|<indicator> <symbol>]` | 35+ technical indicators via the `ta` library |
 | `./run.sh web` | Web dashboard at http://localhost:8898 |
 | `./run.sh ref [skill]` | Reference skill library for the LLM overlay |
 | `./run.sh swarm [preset]` | Multi-agent committee workflows |
@@ -415,6 +417,67 @@ print(strategy_metrics(legs, spot_range=(440, 560)))
 
 ---
 
+## Technical indicators
+
+Thin wrapper in `src/schwabagent/ta_indicators.py` around the
+[`ta` library](https://github.com/bukosabino/ta) — pure Python, no
+C dependency, 35+ indicators across four categories. Complements
+(not replaces) the existing `indicators.py` module which has 31
+hand-written indicators used by the built-in strategies.
+
+### Available indicators
+
+| Category | Indicators |
+|----------|------------|
+| **Trend** (12) | `sma`, `ema`, `wma`, `macd`, `adx`, `ichimoku`, `aroon`, `psar`, `cci`, `vortex`, `trix`, `kst` |
+| **Momentum** (9) | `rsi`, `stoch`, `stochrsi`, `williams_r`, `roc`, `tsi`, `kama`, `ultimate`, `awesome` |
+| **Volatility** (5) | `bollinger`, `atr`, `keltner`, `donchian`, `ulcer` |
+| **Volume** (9) | `obv`, `mfi`, `vwap`, `cmf`, `adi`, `force_index`, `eom`, `nvi`, `vpt` |
+
+### CLI
+
+```bash
+./run.sh ta                       # list all indicators by category
+./run.sh ta rsi SPY               # RSI(14) on SPY, last 10 values
+./run.sh ta macd AAPL days=365    # MACD on AAPL over 1 year
+./run.sh ta bollinger TLT         # Bollinger bands on TLT
+```
+
+Multi-output indicators (`macd`, `adx`, `bollinger`, `ichimoku`, etc.)
+print one column per output.
+
+### Python API
+
+The module exposes two primary entry points:
+
+```python
+from schwabagent.ta_indicators import compute, apply_all
+from schwabagent.schwab_client import SchwabClient
+from schwabagent.config import Config
+
+client = SchwabClient(Config())
+client.authenticate()
+df = client.get_ohlcv("SPY", days=365)
+
+# Single indicator — scalar (Series) or multi-output (DataFrame)
+rsi = compute(df, "rsi", window=14)                     # → Series
+macd = compute(df, "macd", fast=12, slow=26, signal=9)  # → DataFrame with 3 cols
+bb = compute(df, "bollinger", window=20, window_dev=2)  # → DataFrame with 5 cols
+
+# Bulk feature engineering — 25+ indicator columns in one call
+features = apply_all(df)                                # → wide DataFrame
+features = apply_all(df, include=["rsi", "atr", "macd"])
+features = apply_all(df, exclude=["williams_r"])
+```
+
+Both `compute` and `apply_all` accept either lowercase OHLCV columns
+(schwab-agent convention) or capitalized columns (yfinance convention).
+Multi-output indicators are automatically expanded into individual
+columns in `apply_all` so the result is ready to feed to an ML model
+or a backtest.
+
+---
+
 ## Portfolio optimization
 
 Wrapper around [PyPortfolioOpt](https://github.com/robertmartin8/PyPortfolioOpt) in
@@ -619,6 +682,7 @@ src/schwabagent/
   backtest_validation.py Monte Carlo + Bootstrap + Walk-Forward validation
   options.py             Black-Scholes pricing, IV solver, multi-leg strategies
   portfolio_optimizer.py PyPortfolioOpt wrapper (mean-variance, HRP, discrete alloc)
+  ta_indicators.py       35+ technical indicators via the `ta` library (trend, momentum, volatility, volume)
   cli.py                 CLI entry point
   strategies/
     base.py              Abstract strategy interface + Signal enum
@@ -654,7 +718,7 @@ docs/
 
 ```bash
 uv sync --dev
-uv run pytest          # run tests (490 tests, all passing)
+uv run pytest          # run tests (544 tests, all passing)
 uv run ruff check src  # lint
 ```
 

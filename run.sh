@@ -283,6 +283,98 @@ for strat in strategies:
 "
 }
 
+cmd_ta() {
+    # Technical indicators via the `ta` library.
+    # Usage:
+    #   ./run.sh ta                         → list all available indicators
+    #   ./run.sh ta list                    → list all indicators (alias)
+    #   ./run.sh ta <indicator> <symbol>    → compute for a Schwab symbol
+    #   ./run.sh ta <indicator> <symbol> days=N
+    SUB="${2:-list}"
+    SYMBOL="${3:-}"
+    shift 3 2>/dev/null || true
+
+    DAYS="180"
+    for arg in "$@"; do
+        KEY="${arg%%=*}"
+        VAL="${arg#*=}"
+        case "$KEY" in
+            days) DAYS="$VAL" ;;
+        esac
+    done
+
+    if [ "$SUB" = "list" ] || [ -z "$SUB" ]; then
+        $VENV -c "
+from schwabagent.ta_indicators import list_indicators, indicator_names
+print()
+print(f'  {len(indicator_names())} technical indicators available:')
+print()
+for cat, names in list_indicators().items():
+    print(f'  ${CYAN}{cat}${NC}')
+    for n in names:
+        print(f'    - {n}')
+    print()
+print('  Usage: ./run.sh ta <indicator> <symbol> [days=N]')
+print()
+"
+        return
+    fi
+
+    if [ -z "$SYMBOL" ]; then
+        echo "  Usage: ./run.sh ta <indicator> <symbol> [days=N]"
+        return 1
+    fi
+
+    echo ""
+    echo -e "${CYAN}=== ${SUB} on ${SYMBOL} (${DAYS}d) ===${NC}"
+    echo ""
+
+    $VENV -c "
+import pandas as pd
+from schwabagent.config import Config
+from schwabagent.schwab_client import SchwabClient
+from schwabagent.ta_indicators import compute
+
+config = Config()
+client = SchwabClient(config)
+if not client.authenticate():
+    print('  Schwab API not authenticated — run ./run.sh enroll first.')
+    import sys; sys.exit(1)
+
+try:
+    df = client.get_ohlcv('${SYMBOL}', days=int('${DAYS}'))
+except Exception as e:
+    print(f'  Error fetching {'\"'}${SYMBOL}{'\"'}: {e}')
+    import sys; sys.exit(1)
+
+if df is None or df.empty:
+    print(f'  No data for ${SYMBOL}')
+    import sys; sys.exit(1)
+
+print(f'  Fetched {len(df)} bars ({df.index[0].date()} → {df.index[-1].date()})')
+print()
+
+try:
+    result = compute(df, '${SUB}')
+except ValueError as e:
+    print(f'  {e}')
+    import sys; sys.exit(1)
+
+# Show the last 10 values
+if isinstance(result, pd.Series):
+    print(f'  Last 10 values:')
+    for idx, val in result.tail(10).items():
+        if pd.isna(val):
+            print(f'    {idx.date()}  {val}')
+        else:
+            print(f'    {idx.date()}  {val:>12.4f}')
+else:
+    print(f'  Last 10 values ({len(result.columns)} columns):')
+    print(result.tail(10).to_string(float_format=lambda x: f'{x:>10.4f}'))
+print()
+"
+}
+
 cmd_optimize() {
     # Portfolio optimization via PyPortfolioOpt.
     # Usage:
@@ -988,13 +1080,14 @@ case "${1:-once}" in
     validate) cmd_validate "$@" ;;
     options)  cmd_options "$@" ;;
     optimize) cmd_optimize "$@" ;;
+    ta)       cmd_ta "$@" ;;
     dream)   cmd_dream ;;
     sec)     cmd_sec "$@" ;;
     web)     cmd_web ;;
     ref)     shift; cmd_ref "$@" ;;
     swarm)   shift; cmd_swarm "$@" ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|validate|options|optimize|dream|sec|web|ref|swarm]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|ta|skills|feedback|backtest|validate|options|optimize|dream|sec|web|ref|swarm]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -1010,6 +1103,7 @@ case "${1:-once}" in
         echo "  validate Backtest + statistical validation (Monte Carlo + Bootstrap + Walk-Forward)"
         echo "  options  Options pricing (price|iv|strategy — Black-Scholes, IV solver, multi-leg)"
         echo "  optimize Portfolio optimization via PyPortfolioOpt (max Sharpe, min vol, HRP)"
+        echo "  ta       Technical indicators via the ta library (./run.sh ta [list|<indicator> <symbol>])"
         echo "  dream    Run one dreamcycle (autonomous research + calibration)"
         echo "  sec      SEC filings (e.g. ./run.sh sec AAPL [filings|analyze|risks|compare|scan])"
         echo "  web      Start web dashboard (http://localhost:8898)"
