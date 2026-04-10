@@ -504,6 +504,25 @@ cmd_web() {
     $VENV -m schwabagent.cli --web
 }
 
+cmd_ref() {
+    # Reference skills (bundled with package, ported from vibe-trading).
+    # Usage: ./run.sh ref            → list all skills grouped by category
+    #        ./run.sh ref <name>     → show full content for a specific skill
+    NAME="${1:-}"
+    $VENV -c "
+import sys
+from schwabagent.intelligence import SkillsLoader
+loader = SkillsLoader()
+name = '${NAME}'
+if name:
+    print(loader.get_content(name))
+else:
+    print(f'\n  {len(loader.skills)} reference skills loaded\n')
+    print(loader.get_descriptions())
+    print()
+"
+}
+
 # ---------- main ----------
 
 case "${1:-once}" in
@@ -521,8 +540,9 @@ case "${1:-once}" in
     dream)   cmd_dream ;;
     sec)     cmd_sec "$@" ;;
     web)     cmd_web ;;
+    ref)     shift; cmd_ref "$@" ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|dream|sec|web]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|dream|sec|web|ref]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -538,5 +558,6 @@ case "${1:-once}" in
         echo "  dream    Run one dreamcycle (autonomous research + calibration)"
         echo "  sec      SEC filings (e.g. ./run.sh sec AAPL [filings|analyze|risks|compare|scan])"
         echo "  web      Start web dashboard (http://localhost:8898)"
+        echo "  ref      Reference skill library (./run.sh ref [skill-name])"
         ;;
 esac

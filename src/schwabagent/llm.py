@@ -36,6 +36,7 @@ class LLMClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self._available: bool | None = None
+        self._skills_loader: Any = None  # lazy-loaded SkillsLoader
 
         # Provider-specific defaults
         if self.provider == "ollama":
@@ -99,6 +100,45 @@ class LLMClient:
             return self._generate_openai(prompt, system, max_tokens)
         else:
             raise ValueError(f"Unknown LLM provider: {self.provider}")
+
+    # ── Skills (progressive disclosure) ──────────────────────────────────
+
+    @property
+    def skills(self):
+        """Lazy-loaded SkillsLoader — loads only when first accessed."""
+        if self._skills_loader is None:
+            from schwabagent.intelligence import SkillsLoader
+            self._skills_loader = SkillsLoader()
+        return self._skills_loader
+
+    def with_skills(self, system: str = "") -> str:
+        """Augment a system prompt with the skill catalog.
+
+        Emits only one-line summaries grouped by category. The LLM can
+        then call load_skill(name) to pull full content on demand.
+
+        Args:
+            system: Base system prompt.
+
+        Returns:
+            System prompt with a "Skills Available" section appended.
+        """
+        catalog = self.skills.get_descriptions()
+        if not catalog or catalog == "(no skills)":
+            return system
+        header = (
+            "\n\n## Skills Available\n"
+            "You have access to the following reference skills. Call the "
+            "load_skill(name) helper to fetch the full methodology for any "
+            "skill when you need it.\n"
+        )
+        return (system + header + catalog).strip()
+
+    def load_skill(self, name: str) -> str:
+        """Return the full SKILL.md content for a given skill name."""
+        return self.skills.get_content(name)
+
+    # ── Core generate (by provider) ──────────────────────────────────────
 
     def _generate_ollama(self, prompt: str, system: str, max_tokens: int | None) -> str:
         import httpx
