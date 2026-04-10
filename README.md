@@ -6,6 +6,7 @@ Beyond core trading, the agent includes:
 
 - **Web dashboard** — real-time view of accounts, positions, trades, and P&L
 - **Backtest validation** — Monte Carlo, Bootstrap Sharpe CI, Walk-Forward
+- **Options analysis** — Black-Scholes + Greeks, implied vol solver, multi-leg payoff analysis
 - **Reference skill library** — 23 curated analysis methodologies for the LLM overlay
 - **Swarm workflows** — DAG-based multi-agent committees (investment, TA panel, ETF allocation)
 - **Telegram bot** — push alerts, `/status` `/pnl` `/kill`, trade approval
@@ -50,6 +51,7 @@ $EDITOR .env   # set Schwab credentials at minimum
 | `./run.sh pf AAPL` | Point & Figure chart (powered by pypf + Schwab data) |
 | `./run.sh backtest <strategy>` | Historical backtest against CSV data |
 | `./run.sh validate <strategy>` | Backtest + Monte Carlo + Bootstrap + Walk-Forward validation |
+| `./run.sh options price\|iv\|strategy` | Black-Scholes pricing, IV solver, multi-leg strategy analysis |
 | `./run.sh web` | Web dashboard at http://localhost:8898 |
 | `./run.sh ref [skill]` | Reference skill library for the LLM overlay |
 | `./run.sh swarm [preset]` | Multi-agent committee workflows |
@@ -320,6 +322,97 @@ for a complete example.
 
 ---
 
+## Options analysis
+
+Pure-math options module in `src/schwabagent/options.py` — Black-Scholes
+pricing, Greeks, implied volatility solver, multi-leg payoff analysis, and
+a library of common strategy constructors. No scipy dependency (normal
+CDF/PDF from stdlib `math.erf`).
+
+### Single-option pricing
+
+```bash
+./run.sh options price spot=500 strike=505 dte=30 iv=0.20 type=call
+```
+
+```
+  CALL spot=$500.00 strike=$505.00 dte=30d iv=20.00%
+
+    price  = 10.064226
+    delta  = 0.470825
+    gamma  = 0.013878
+    theta  = -0.220982    (per day)
+    vega   = 0.570336     (per 1% IV change)
+```
+
+### Implied volatility
+
+Bisection solver that returns `None` if the market price is outside the
+arbitrage bounds (below intrinsic or above spot).
+
+```bash
+./run.sh options iv price=3.50 spot=500 strike=505 dte=30 type=call
+# → Implied volatility: 0.0841 (8.41%)
+```
+
+### Multi-leg strategies
+
+Built-in strategy constructors produce a list of `Leg` objects, which
+`strategy_metrics()` analyzes for max profit, max loss, breakevens, and
+net debit/credit.
+
+| Strategy | CLI name | Notes |
+|----------|----------|-------|
+| Long call / put | `long_call`, `long_put` | Single-leg directional |
+| Long straddle / strangle | `long_straddle`, `long_strangle` | Volatility bets |
+| Vertical spreads | `bull_call`, `bear_put`, `bull_put`, `bear_call` | Debit and credit |
+| Iron condor | `iron_condor` | Short put spread + short call spread |
+| Butterfly | `long_butterfly` | Narrow pin on middle strike |
+| Covered call | `covered_call` | Long stock + short call |
+| Protective put | `protective_put` | Long stock + long put |
+
+```bash
+./run.sh options strategy iron_condor \
+    pl=460 ps=470 cs=530 cl=540 \
+    pl_prem=0.80 ps_prem=1.50 cs_prem=1.60 cl_prem=0.75
+```
+
+```
+  iron_condor
+
+    Legs (4):
+      + 1x put  strike=$460.00 @ $0.80
+      - 1x put  strike=$470.00 @ $1.50
+      - 1x call strike=$530.00 @ $1.60
+      + 1x call strike=$540.00 @ $0.75
+
+    Net credit  $1.55
+    Max profit    $1.55
+    Max loss      $-8.45
+    Breakevens    $468.45, $531.55
+```
+
+Python API:
+
+```python
+from schwabagent.options import (
+    bs_price_and_greeks, implied_volatility,
+    iron_condor, strategy_metrics,
+)
+
+legs = iron_condor(
+    put_long_strike=460, put_short_strike=470,
+    call_short_strike=530, call_long_strike=540,
+    put_long_premium=0.80, put_short_premium=1.50,
+    call_short_premium=1.60, call_long_premium=0.75,
+)
+print(strategy_metrics(legs, spot_range=(440, 560)))
+# {'max_profit': 1.55, 'max_loss': -8.45,
+#  'breakevens': [468.45, 531.55], 'net_debit': -1.55, 'legs': 4}
+```
+
+---
+
 ## Backtest validation
 
 Statistical tests that quantify how much of a strategy's backtest
@@ -433,6 +526,7 @@ src/schwabagent/
   llm.py                 Multi-provider LLM client (Ollama/Anthropic/OpenAI)
   backtest.py            Historical backtester
   backtest_validation.py Monte Carlo + Bootstrap + Walk-Forward validation
+  options.py             Black-Scholes pricing, IV solver, multi-leg strategies
   cli.py                 CLI entry point
   strategies/
     base.py              Abstract strategy interface + Signal enum
@@ -468,7 +562,7 @@ docs/
 
 ```bash
 uv sync --dev
-uv run pytest          # run tests (434 tests, all passing)
+uv run pytest          # run tests (468 tests, all passing)
 uv run ruff check src  # lint
 ```
 
@@ -492,3 +586,7 @@ and adapts them to schwab-agent's equity/ETF/options focus:
 - **Backtest validation** — Monte Carlo, Bootstrap, Walk-Forward.
   Monte Carlo reworked to operate on dollar PnLs (not percent returns)
   so the Sharpe test produces meaningful variance.
+- **Options pricing** — Black-Scholes + Greeks adapted from
+  vibe-trading's `options_pricing_tool.py`, extended with an implied
+  volatility bisection solver, multi-leg payoff analysis, and strategy
+  constructors. Pure stdlib + numpy; no scipy dependency.

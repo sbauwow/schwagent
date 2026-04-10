@@ -4,7 +4,7 @@ Last updated: 2026-04-10
 
 ## Current State
 
-13k+ LOC Python, 434 tests passing, 7 strategies, 5 Schwab accounts connected.
+14k+ LOC Python, 468 tests passing, 7 strategies, 5 Schwab accounts connected.
 
 **What works today:**
 - Dual Schwab API (Account + Market Data), OAuth2 enrolled
@@ -16,6 +16,7 @@ Last updated: 2026-04-10
 - Dreamcycle (7-phase autonomous research loop)
 - Backtesting with parameter sweep (800-run optimization)
 - **Backtest validation** — Monte Carlo, Bootstrap Sharpe CI, Walk-Forward
+- **Options analysis** — Black-Scholes pricing + Greeks, implied vol solver, multi-leg strategy builders (iron condor, spreads, straddles, butterflies, covered calls)
 - WebSocket streaming, order fill tracking, cron scheduler
 - Telegram bot (alerts, commands, trade approval gate)
 - Multi-provider LLM (Ollama, Anthropic, OpenAI)
@@ -31,7 +32,7 @@ Last updated: 2026-04-10
 - No earnings calendar avoidance
 - No regime detection beyond SPY/SMA200 filter (all strategies run in most conditions)
 - No cross-account portfolio view (5 accounts treated independently)
-- No options execution (options chain reading exists, order placement does not)
+- No live options execution yet (options pricing, IV, and multi-leg strategy analysis exist; Schwab order placement for options not wired)
 
 ---
 

@@ -283,6 +283,196 @@ for strat in strategies:
 "
 }
 
+cmd_options() {
+    # Options pricing and strategy analysis.
+    # Usage:
+    #   ./run.sh options price   spot=500 strike=500 dte=30 iv=0.20 type=call
+    #   ./run.sh options iv      price=12.5 spot=500 strike=500 dte=30 type=call
+    #   ./run.sh options strategy iron_condor puts=460,470 calls=530,540 premiums=0.8,1.5,1.6,0.75
+    #
+    # Strategies supported: long_call, long_put, long_straddle, long_strangle,
+    #   bull_call, bear_put, bull_put, bear_call, iron_condor, long_butterfly,
+    #   covered_call, protective_put
+    SUB="${2:-help}"
+    shift 2 2>/dev/null || true
+
+    if [ "$SUB" = "help" ] || [ -z "$SUB" ]; then
+        cat <<EOF
+
+  Options pricing and strategy analysis
+
+  ${CYAN}./run.sh options price spot=<S> strike=<K> dte=<days> iv=<vol> type=<call|put> [rate=<r>]${NC}
+    Black-Scholes price and Greeks for a single option.
+    Example: ./run.sh options price spot=500 strike=505 dte=30 iv=0.20 type=call
+
+  ${CYAN}./run.sh options iv price=<P> spot=<S> strike=<K> dte=<days> type=<call|put> [rate=<r>]${NC}
+    Implied volatility from an observed market price.
+    Example: ./run.sh options iv price=3.50 spot=500 strike=505 dte=30 type=call
+
+  ${CYAN}./run.sh options strategy <name> <args>${NC}
+    Multi-leg strategy analysis (payoff, max profit/loss, breakevens).
+
+    Named strategies (all take --premiums= as a comma list in leg order):
+      long_call strike=100 premium=5
+      long_put strike=100 premium=5
+      long_straddle strike=100 call=5 put=5
+      long_strangle call_strike=110 put_strike=90 call=2 put=2
+      bull_call long=100 short=110 long_prem=6 short_prem=2
+      bear_put long=100 short=90 long_prem=5 short_prem=1
+      bull_put short=100 long=90 short_prem=4 long_prem=1
+      bear_call short=100 long=110 short_prem=4 long_prem=1
+      iron_condor pl=90 ps=95 cs=105 cl=110 pl_prem=0.5 ps_prem=1.5 cs_prem=1.5 cl_prem=0.5
+      long_butterfly lower=95 mid=100 upper=105 lower_prem=6 mid_prem=3 upper_prem=1
+      covered_call strike=110 call_prem=2 stock=100
+      protective_put strike=95 put_prem=3 stock=100
+
+EOF
+        return
+    fi
+
+    # Build a Python one-liner that reads the positional args into kwargs
+    ARGS_PY=""
+    for arg in "$@"; do
+        KEY="${arg%%=*}"
+        VAL="${arg#*=}"
+        ARGS_PY="${ARGS_PY}    '${KEY}': '${VAL}',\n"
+    done
+
+    case "$SUB" in
+        price)
+            $VENV -c "
+from schwabagent.options import bs_price_and_greeks
+args = {
+$(printf "${ARGS_PY}")
+}
+spot = float(args['spot'])
+strike = float(args['strike'])
+dte = float(args['dte'])
+iv = float(args['iv'])
+opt_type = args['type'].lower()
+rate = float(args.get('rate', '0.05'))
+T = dte / 365.0
+r = bs_price_and_greeks(spot, strike, T, rate, iv, opt_type)
+print()
+print(f'  {opt_type.upper()} spot=\${spot:.2f} strike=\${strike:.2f} dte={int(dte)}d iv={iv:.2%}')
+print()
+for k, v in r.items():
+    print(f'    {k:6} = {v}')
+print()
+"
+            ;;
+        iv)
+            $VENV -c "
+from schwabagent.options import implied_volatility
+args = {
+$(printf "${ARGS_PY}")
+}
+price = float(args['price'])
+spot = float(args['spot'])
+strike = float(args['strike'])
+dte = float(args['dte'])
+opt_type = args['type'].lower()
+rate = float(args.get('rate', '0.05'))
+T = dte / 365.0
+iv = implied_volatility(price, spot, strike, T, rate, opt_type)
+print()
+if iv is None:
+    print('  Error: market price is outside arbitrage bounds')
+else:
+    print(f'  Implied volatility: {iv:.4f} ({iv*100:.2f}%)')
+print()
+"
+            ;;
+        strategy)
+            # First positional arg after 'strategy' is the strategy name
+            STRAT="${1:-}"
+            shift || true
+            ARGS_PY=""
+            for arg in "$@"; do
+                KEY="${arg%%=*}"
+                VAL="${arg#*=}"
+                ARGS_PY="${ARGS_PY}    '${KEY}': '${VAL}',\n"
+            done
+            $VENV -c "
+from schwabagent import options as O
+args = {
+$(printf "${ARGS_PY}")
+}
+strat = '${STRAT}'
+try:
+    if strat == 'long_call':
+        legs = O.long_call(float(args['strike']), float(args['premium']))
+    elif strat == 'long_put':
+        legs = O.long_put(float(args['strike']), float(args['premium']))
+    elif strat == 'long_straddle':
+        legs = O.long_straddle(float(args['strike']), float(args['call']), float(args['put']))
+    elif strat == 'long_strangle':
+        legs = O.long_strangle(float(args['call_strike']), float(args['put_strike']), float(args['call']), float(args['put']))
+    elif strat == 'bull_call':
+        legs = O.bull_call_spread(float(args['long']), float(args['short']), float(args['long_prem']), float(args['short_prem']))
+    elif strat == 'bear_put':
+        legs = O.bear_put_spread(float(args['long']), float(args['short']), float(args['long_prem']), float(args['short_prem']))
+    elif strat == 'bull_put':
+        legs = O.bull_put_spread(float(args['short']), float(args['long']), float(args['short_prem']), float(args['long_prem']))
+    elif strat == 'bear_call':
+        legs = O.bear_call_spread(float(args['short']), float(args['long']), float(args['short_prem']), float(args['long_prem']))
+    elif strat == 'iron_condor':
+        legs = O.iron_condor(
+            float(args['pl']), float(args['ps']), float(args['cs']), float(args['cl']),
+            float(args['pl_prem']), float(args['ps_prem']), float(args['cs_prem']), float(args['cl_prem']),
+        )
+    elif strat == 'long_butterfly':
+        legs = O.long_butterfly(
+            float(args['lower']), float(args['mid']), float(args['upper']),
+            float(args['lower_prem']), float(args['mid_prem']), float(args['upper_prem']),
+        )
+    elif strat == 'covered_call':
+        legs = O.covered_call(float(args['strike']), float(args['call_prem']), float(args['stock']))
+    elif strat == 'protective_put':
+        legs = O.protective_put(float(args['strike']), float(args['put_prem']), float(args['stock']))
+    else:
+        print(f'  Unknown strategy: {strat}')
+        import sys; sys.exit(1)
+
+    # Determine spot range from the legs
+    strikes = [leg.strike for leg in legs if leg.strike > 0]
+    if strikes:
+        lo = min(strikes) * 0.85
+        hi = max(strikes) * 1.15
+    else:
+        lo, hi = 80, 120
+
+    m = O.strategy_metrics(legs, spot_range=(lo, hi), n_points=5001)
+
+    print()
+    print(f'  ${CYAN}{strat}${NC}')
+    print()
+    print(f'    Legs ({len(legs)}):')
+    for leg in legs:
+        sign = '+' if leg.side == 'long' else '-'
+        print(f'      {sign} {leg.quantity}x {leg.option_type:4} strike=\${leg.strike:.2f} @ \${leg.premium:.2f}')
+    print()
+    credit_or_debit = 'debit' if m['net_debit'] > 0 else 'credit'
+    print(f'    Net {credit_or_debit:7} \${abs(m[\"net_debit\"]):.2f}')
+    print(f'    Max profit    \${m[\"max_profit\"]:.2f}')
+    print(f'    Max loss      \${m[\"max_loss\"]:.2f}')
+    if m['breakevens']:
+        bes = ', '.join(f'\${b:.2f}' for b in m['breakevens'])
+        print(f'    Breakevens    {bes}')
+    print()
+except (KeyError, ValueError) as e:
+    print(f'  Error: {e}')
+    import sys; sys.exit(1)
+"
+            ;;
+        *)
+            echo "  Unknown subcommand: $SUB"
+            echo "  Try: ./run.sh options help"
+            return 1
+            ;;
+    esac
+}
+
 cmd_validate() {
     # Backtest + statistical validation (Monte Carlo, Bootstrap, Walk-Forward).
     # Usage: ./run.sh validate <strategy> [start] [end]
@@ -707,13 +897,14 @@ case "${1:-once}" in
     feedback) cmd_feedback "$@" ;;
     backtest) cmd_backtest "$@" ;;
     validate) cmd_validate "$@" ;;
+    options)  cmd_options "$@" ;;
     dream)   cmd_dream ;;
     sec)     cmd_sec "$@" ;;
     web)     cmd_web ;;
     ref)     shift; cmd_ref "$@" ;;
     swarm)   shift; cmd_swarm "$@" ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|validate|dream|sec|web|ref|swarm]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|validate|options|dream|sec|web|ref|swarm]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -727,6 +918,7 @@ case "${1:-once}" in
         echo "  feedback Show signal accuracy, calibration, and drift alerts"
         echo "  backtest Run strategy backtest (e.g. ./run.sh backtest momentum 2020-01-01 2024-12-31)"
         echo "  validate Backtest + statistical validation (Monte Carlo + Bootstrap + Walk-Forward)"
+        echo "  options  Options pricing (price|iv|strategy — Black-Scholes, IV solver, multi-leg)"
         echo "  dream    Run one dreamcycle (autonomous research + calibration)"
         echo "  sec      SEC filings (e.g. ./run.sh sec AAPL [filings|analyze|risks|compare|scan])"
         echo "  web      Start web dashboard (http://localhost:8898)"
