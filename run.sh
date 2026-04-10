@@ -283,6 +283,51 @@ for strat in strategies:
 "
 }
 
+cmd_validate() {
+    # Backtest + statistical validation (Monte Carlo, Bootstrap, Walk-Forward).
+    # Usage: ./run.sh validate <strategy> [start] [end]
+    STRATEGY="${2:-momentum}"
+    START="${3:-2020-01-01}"
+    END="${4:-2025-12-31}"
+    echo ""
+    echo -e "${CYAN}=== Validating: ${STRATEGY} (${START} → ${END}) ===${NC}"
+    echo ""
+
+    $VENV -c "
+from schwabagent.backtest import Backtester, BacktestConfig
+from schwabagent.backtest_validation import run_validation, format_report
+
+symbols = ['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','JPM','V','UNH']
+config = BacktestConfig(
+    strategy='${STRATEGY}',
+    symbols=symbols,
+    start='${START}',
+    end='${END}',
+    initial_capital=100000,
+    data_path='data/sp500_stocks.csv',
+)
+bt = Backtester(config)
+result = bt.run()
+result.print_report()
+
+print()
+print('-' * 60)
+print()
+
+if len(result.equity_curve) < 10:
+    print('  Not enough equity observations for validation.')
+else:
+    validation_results = run_validation(
+        equity_curve=result.equity_curve,
+        trades=result.trades,
+        n_simulations=1000,
+        n_bootstrap=1000,
+        n_windows=5,
+    )
+    print(format_report(validation_results))
+"
+}
+
 cmd_dream() {
     echo ""
     echo -e "${CYAN}=== Dreamcycle — autonomous research cycle ===${NC}"
@@ -661,13 +706,14 @@ case "${1:-once}" in
     skills)  cmd_skills ;;
     feedback) cmd_feedback "$@" ;;
     backtest) cmd_backtest "$@" ;;
+    validate) cmd_validate "$@" ;;
     dream)   cmd_dream ;;
     sec)     cmd_sec "$@" ;;
     web)     cmd_web ;;
     ref)     shift; cmd_ref "$@" ;;
     swarm)   shift; cmd_swarm "$@" ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|dream|sec|web|ref|swarm]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|skills|feedback|backtest|validate|dream|sec|web|ref|swarm]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -680,6 +726,7 @@ case "${1:-once}" in
         echo "  skills   List available skills"
         echo "  feedback Show signal accuracy, calibration, and drift alerts"
         echo "  backtest Run strategy backtest (e.g. ./run.sh backtest momentum 2020-01-01 2024-12-31)"
+        echo "  validate Backtest + statistical validation (Monte Carlo + Bootstrap + Walk-Forward)"
         echo "  dream    Run one dreamcycle (autonomous research + calibration)"
         echo "  sec      SEC filings (e.g. ./run.sh sec AAPL [filings|analyze|risks|compare|scan])"
         echo "  web      Start web dashboard (http://localhost:8898)"

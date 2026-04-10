@@ -1,6 +1,15 @@
 # schwab-agent
 
-Automated equity and ETF trading agent for Charles Schwab. Connects via dual OAuth2 apps (account + market data), scans a configurable watchlist with multiple quantitative strategies, and places orders through the Schwab Trader API.
+Automated equity, ETF, and options trading agent for Charles Schwab. Connects via dual OAuth2 apps (account + market data), scans a configurable watchlist with multiple quantitative strategies, and places orders through the Schwab Trader API.
+
+Beyond core trading, the agent includes:
+
+- **Web dashboard** — real-time view of accounts, positions, trades, and P&L
+- **Backtest validation** — Monte Carlo, Bootstrap Sharpe CI, Walk-Forward
+- **Reference skill library** — 23 curated analysis methodologies for the LLM overlay
+- **Swarm workflows** — DAG-based multi-agent committees (investment, TA panel, ETF allocation)
+- **Telegram bot** — push alerts, `/status` `/pnl` `/kill`, trade approval
+- **Point & Figure charting** — classic charting on Schwab OHLC data
 
 **`DRY_RUN=true` is the default.** Each strategy also has its own `LIVE_<name>=false` toggle. No real orders are placed until both layers are explicitly enabled.
 
@@ -39,6 +48,11 @@ $EDITOR .env   # set Schwab credentials at minimum
 | `./run.sh live` | **Live trading** — real orders, requires confirmation |
 | `./run.sh pnl` | Show realized P&L by strategy |
 | `./run.sh pf AAPL` | Point & Figure chart (powered by pypf + Schwab data) |
+| `./run.sh backtest <strategy>` | Historical backtest against CSV data |
+| `./run.sh validate <strategy>` | Backtest + Monte Carlo + Bootstrap + Walk-Forward validation |
+| `./run.sh web` | Web dashboard at http://localhost:8898 |
+| `./run.sh ref [skill]` | Reference skill library for the LLM overlay |
+| `./run.sh swarm [preset]` | Multi-agent committee workflows |
 
 ### Point & Figure charts
 
@@ -48,6 +62,22 @@ $EDITOR .env   # set Schwab credentials at minimum
 ./run.sh pf QQQ -d 0.5 -p 1           # 6-month chart, 1yr data
 ./run.sh pf GLD --no-style --meta      # plain output + JSON metadata
 ```
+
+### Web dashboard
+
+A FastAPI + vanilla-JS dashboard for real-time account and portfolio visibility.
+
+```bash
+./run.sh web                           # starts on http://localhost:8898
+```
+
+Four tabs:
+- **Dashboard** — KPI cards (total value, cash, invested, kill switch, peak, mode), per-account cards with PDT/closing-only/unsettled flags, stacked portfolio allocation bar.
+- **Positions** — all positions across all linked accounts, sorted by market value.
+- **Trades** — recent trade history from `trade_history.jsonl`.
+- **P&L** — per-strategy P&L with win rates, total realized P&L, and trade counts.
+
+Data is fetched from Schwab on demand; a WebSocket heartbeat keeps the UI live-aware.
 
 ---
 
@@ -223,6 +253,113 @@ When `TELEGRAM_REQUIRE_APPROVAL=true`, live trades show **Approve** / **Reject**
 
 ---
 
+## Intelligence layer
+
+The `src/schwabagent/intelligence/` module adds LLM-friendly reasoning tooling
+adapted from [HKUDS/vibe-trading](https://github.com/hkuds/vibe-trading) (MIT licensed).
+
+### Reference skill library
+
+23 curated `SKILL.md` methodology documents cover equity, ETF, and options
+analysis. The `SkillsLoader` uses progressive disclosure: only one-line
+summaries are injected into the system prompt; full content is loaded on
+demand via `llm.load_skill(name)`.
+
+```bash
+./run.sh ref                           # list all skills by category
+./run.sh ref options-strategy          # show full methodology for one skill
+```
+
+Categories and examples:
+
+| Category | Skills |
+|----------|--------|
+| **Strategy** | `technical-basic`, `multi-factor`, `ml-strategy`, `pair-trading`, `seasonal`, `candlestick`, `execution-model`, `strategy-generate` |
+| **Analysis** | `factor-research`, `correlation-analysis`, `behavioral-finance`, `valuation-model`, `earnings-forecast`, `market-microstructure` |
+| **Asset class** | `asset-allocation`, `options-strategy`, `options-advanced`, `options-payoff`, `etf-analysis`, `sector-rotation`, `hedging-strategy` |
+| **Flow** | `financial-statement`, `fundamental-filter` |
+
+The active `LLMClient` exposes:
+
+```python
+llm.skills                             # lazy-loaded SkillsLoader
+llm.with_skills(system_prompt)         # augment system prompt with skill catalog
+llm.load_skill("options-strategy")     # fetch full content on demand
+```
+
+### Swarm multi-agent workflows
+
+DAG-based committee workflows where multiple agents argue, analyze, or
+synthesize in parallel before a final decision. Each agent has its own
+system prompt and whitelisted skills. Tasks run in topological layers
+— independent tasks execute in parallel via a `ThreadPoolExecutor`,
+then dependent tasks consume upstream outputs.
+
+```bash
+./run.sh swarm                                          # list all presets
+./run.sh swarm investment_committee                     # describe one preset
+./run.sh swarm investment_committee target=SPY          # execute
+./run.sh swarm technical_analysis_panel target=AAPL timeframe=daily
+./run.sh swarm etf_allocation_desk universe="SPY,QQQ,IWM,EFA,EEM,TLT,GLD,VNQ"
+```
+
+Bundled presets:
+
+| Preset | Agents | Purpose |
+|--------|--------|---------|
+| `investment_committee` | bull advocate → bear advocate → risk officer → portfolio manager | Position sizing decision on a single ticker |
+| `technical_analysis_panel` | trend + momentum + pattern + volume → aggregator | Multi-dimensional TA consensus with composite score |
+| `etf_allocation_desk` | rotation + correlation + factor → allocation strategist | Build a 4-6 ETF weighted portfolio from a universe |
+
+All presets are YAML files in `src/schwabagent/intelligence/swarm/presets/` —
+add new ones without touching code. Each preset defines agents (role,
+system prompt, skills), tasks (DAG with `depends_on` and `input_from`
+mapping), and user variables. See
+`src/schwabagent/intelligence/swarm/presets/investment_committee.yaml`
+for a complete example.
+
+---
+
+## Backtest validation
+
+Statistical tests that quantify how much of a strategy's backtest
+performance is signal vs luck. Runs on top of the regular backtester.
+
+```bash
+./run.sh validate momentum 2020-01-01 2024-12-31
+```
+
+Produces three independent verdicts:
+
+| Test | What it asks | Verdict rating |
+|------|--------------|----------------|
+| **Monte Carlo permutation** | Is the observed Sharpe better than a random reordering of the same PnL? | `(significant)` `(marginal)` `(not significant)` |
+| **Bootstrap Sharpe CI** | How stable is the Sharpe under resampling? | `(robust)` `(positive)` `(likely positive)` `(unreliable)` |
+| **Walk-Forward** | Is the strategy profitable in most time windows, not just one lucky run? | `(very consistent)` `(consistent)` `(mixed)` `(inconsistent)` |
+
+Monte Carlo operates on daily dollar PnLs (not percentage returns) so the
+Sharpe test has real variance — the equity base shifts with path, and
+strategies that depend on sequencing will score differently from random.
+
+You can also call the validator directly:
+
+```python
+from schwabagent.backtest import Backtester, BacktestConfig
+from schwabagent.backtest_validation import run_validation, format_report
+
+result = Backtester(BacktestConfig(strategy="momentum")).run()
+validation = run_validation(
+    equity_curve=result.equity_curve,
+    trades=result.trades,
+    n_simulations=1000,
+    n_bootstrap=1000,
+    n_windows=5,
+)
+print(format_report(validation))
+```
+
+---
+
 ## Risk management
 
 | Control | Setting | Default |
@@ -238,15 +375,30 @@ The kill switch halts all execution until manually cleared from Telegram (`/resu
 
 ---
 
-## Local LLM support
+## LLM support
 
-Optional [Ollama](https://ollama.com) integration for macro commentary on ETF rotation signals.
+The `LLMClient` routes to one of three providers via `LLM_PROVIDER`:
+
+| Provider | Config | Use case |
+|----------|--------|----------|
+| `ollama` | `OLLAMA_HOST`, `OLLAMA_MODEL` | Local, free, private |
+| `anthropic` | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | Claude API |
+| `openai` | `OPENAI_API_KEY` or `LLM_API_KEY` | OpenAI or any compatible endpoint |
+
+Common config:
 
 ```bash
 LLM_ENABLED=true
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:14b-instruct-q5_K_M
+LLM_PROVIDER=ollama                    # or: anthropic, openai
+LLM_MODEL=qwen2.5:14b-instruct-q5_K_M  # override per provider
+LLM_TEMPERATURE=0.2
+LLM_MAX_TOKENS=1024
+LLM_TIMEOUT=60
 ```
+
+The LLM is used for ETF rotation commentary, signal reasoning, the
+`intelligence/skills` reference library, and `swarm` multi-agent
+workflows described above.
 
 ---
 
@@ -269,26 +421,43 @@ All state is persisted in `~/.schwab-agent/`:
 
 ```
 src/schwabagent/
-  config.py           Configuration (pydantic-settings, loaded from .env)
-  schwab_client.py    Schwab API wrapper (dual client: account + market)
-  runner.py           Main orchestrator (scan → execute loop)
-  risk.py             Risk management + trading rules integration
-  trading_rules.py    Brokerage rules engine (PDT, wash sale, closing-only)
-  persistence.py      JSON/JSONL state storage
-  indicators.py       Technical indicators (SMA, EMA, RSI, MACD, etc.)
-  telegram.py         Telegram bot (alerts, commands, trade approval)
-  pf.py               Point & Figure charting (pypf + Schwab data)
-  llm.py              Ollama LLM client
-  cli.py              CLI entry point
+  config.py              Configuration (pydantic-settings, loaded from .env)
+  schwab_client.py       Schwab API wrapper (dual client: account + market)
+  runner.py              Main orchestrator (scan → execute loop)
+  risk.py                Risk management + trading rules integration
+  trading_rules.py       Brokerage rules engine (PDT, wash sale, closing-only)
+  persistence.py         JSON/JSONL state storage
+  indicators.py          Technical indicators (SMA, EMA, RSI, MACD, etc.)
+  telegram.py            Telegram bot (alerts, commands, trade approval)
+  pf.py                  Point & Figure charting (pypf + Schwab data)
+  llm.py                 Multi-provider LLM client (Ollama/Anthropic/OpenAI)
+  backtest.py            Historical backtester
+  backtest_validation.py Monte Carlo + Bootstrap + Walk-Forward validation
+  cli.py                 CLI entry point
   strategies/
-    base.py           Abstract strategy interface + Signal enum
-    TEMPLATE.py       Strategy template with design checklist
-    etf_rotation.py   Dual momentum ETF rotation
-    etf_scalp.py      Intraday ETF scalping (volume/price breakout)
-    momentum.py       SMA/RSI/MACD momentum
-    mean_reversion.py Bollinger Bands mean reversion
-    trend_following.py EMA alignment + ADX trend
-    composite.py      Multi-strategy consensus
+    base.py              Abstract strategy interface + Signal enum
+    TEMPLATE.py          Strategy template with design checklist
+    etf_rotation.py      Dual momentum ETF rotation
+    etf_scalp.py         Intraday ETF scalping (volume/price breakout)
+    momentum.py          SMA/RSI/MACD momentum
+    mean_reversion.py    Bollinger Bands mean reversion
+    trend_following.py   EMA alignment + ADX trend
+    composite.py         Multi-strategy consensus
+    conviction_hold.py   Long-term hold on speculative positions
+  intelligence/          LLM reasoning layer (vibe-trading port)
+    skills.py            SkillsLoader with progressive disclosure
+    skills_lib/          23 reference SKILL.md methodology documents
+    swarm/               DAG-based multi-agent orchestration
+      models.py          Dataclass-based SwarmAgentSpec / SwarmTask / SwarmRun
+      task_store.py      DAG cycle detection + topological layering
+      preset_loader.py   YAML preset loader
+      worker.py          Single-task worker with skill injection
+      runtime.py         Parallel layer execution (ThreadPoolExecutor)
+      presets/           investment_committee / technical_analysis_panel /
+                         etf_allocation_desk YAML presets
+  web/                   FastAPI dashboard (src/static HTML/JS/CSS)
+    app.py               REST + WebSocket endpoints
+    static/              index.html / app.js / style.css
 docs/
   schwab-api-reference.md   Full Schwab API field reference
 ```
@@ -299,6 +468,27 @@ docs/
 
 ```bash
 uv sync --dev
-uv run pytest          # run tests
+uv run pytest          # run tests (434 tests, all passing)
 uv run ruff check src  # lint
 ```
+
+---
+
+## Credits
+
+The `intelligence/` module (skills library + swarm orchestration) and the
+`backtest_validation.py` module are adapted from
+[HKUDS/vibe-trading](https://github.com/hkuds/vibe-trading) (MIT licensed).
+The original project provides a much broader multi-agent finance workspace
+for Chinese and global markets. This port extracts the portable patterns
+and adapts them to schwab-agent's equity/ETF/options focus:
+
+- **Skills loader** — dataclass-based `SkillsLoader` with YAML frontmatter
+  and progressive disclosure.
+- **Skill corpus** — 23 of the 68 original skills, curated for US equities.
+- **Swarm orchestration** — DAG scheduling, parallel layer execution, YAML
+  preset format. Simplified to single-call agents (no ReAct loop) to fit
+  schwab-agent's existing LLM client.
+- **Backtest validation** — Monte Carlo, Bootstrap, Walk-Forward.
+  Monte Carlo reworked to operate on dollar PnLs (not percent returns)
+  so the Sharpe test produces meaningful variance.
