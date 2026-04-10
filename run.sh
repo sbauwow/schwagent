@@ -29,15 +29,24 @@ NC='\033[0m'
 # ---------- helpers ----------
 
 check_ollama() {
+    LLM_ENABLED=$(grep '^LLM_ENABLED' .env 2>/dev/null | cut -d= -f2)
+    LLM_PROVIDER=$(grep '^LLM_PROVIDER' .env 2>/dev/null | cut -d= -f2)
+    if [ "$LLM_ENABLED" != "true" ]; then
+        echo -e "  ${CYAN}·${NC} LLM disabled in .env (optional)"
+        return 0
+    fi
+    if [ "$LLM_PROVIDER" != "ollama" ] && [ -n "$LLM_PROVIDER" ]; then
+        echo -e "  ${GREEN}✓${NC} LLM provider: ${CYAN}${LLM_PROVIDER}${NC}"
+        return 0
+    fi
     if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
         MODEL=$(grep OLLAMA_MODEL .env 2>/dev/null | cut -d= -f2)
         echo -e "  ${GREEN}✓${NC} Ollama running — model: ${CYAN}${MODEL:-qwen2.5:14b-instruct-q5_K_M}${NC}"
         return 0
-    else
-        echo -e "  ${YELLOW}!${NC} Ollama not running — LLM features disabled"
-        echo -e "    Start it with: ${CYAN}ollama serve${NC}"
-        return 1
     fi
+    echo -e "  ${YELLOW}!${NC} Ollama not running — LLM features disabled"
+    echo -e "    Start it with: ${CYAN}ollama serve${NC}   (or set LLM_ENABLED=false)"
+    return 0
 }
 
 check_schwab() {
