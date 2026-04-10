@@ -1,5 +1,19 @@
 # schwab-agent
 
+## ⚠️  DISCLAIMER — READ THIS FIRST
+
+> **NOT AFFILIATED WITH CHARLES SCHWAB.** This is an unofficial, independent, personal project. It is **not** endorsed by, sponsored by, associated with, or in any way connected to Charles Schwab & Co., Inc. or any of its subsidiaries or affiliates. "Schwab" and any related marks are the property of their respective owners and are used here only to describe which third-party API this code talks to.
+>
+> **NOT TESTED. NOT AUDITED. USE AT YOUR OWN RISK.** This code has **not** been validated in production, has **not** been reviewed for correctness or safety, and may contain bugs that cause it to place wrong orders, lose money, leak credentials, corrupt state, or fail in ways I have not anticipated. I make **no** guarantees that anything in this repository works as described — or at all.
+>
+> **NOT FINANCIAL ADVICE.** Nothing in this repository constitutes financial, investment, trading, tax, or legal advice. Options trading involves substantial risk of loss and is not suitable for every investor. You can lose more than you invest.
+>
+> **NO WARRANTY. NO LIABILITY.** This software is provided "AS IS", without warranty of any kind, express or implied. In no event shall the author be liable for any claim, damages, or other liability — including but not limited to trading losses, account suspension, API misuse, data loss, or any direct, indirect, incidental, special, exemplary, or consequential damages — arising from, out of, or in connection with this software or its use.
+>
+> **If you run this code against a real brokerage account, you are doing so entirely on your own responsibility.** Paper trade first. Read the source. Understand what every order-placing function does before you enable it. If you are not comfortable auditing this yourself, **do not run it.**
+
+---
+
 Automated equity, ETF, and options trading agent for Charles Schwab. Connects via dual OAuth2 apps (account + market data), scans a configurable watchlist with multiple quantitative strategies, and places orders through the Schwab Trader API.
 
 Beyond core trading, the agent includes:
