@@ -77,6 +77,23 @@ class Config(BaseSettings):
     # meaningful edge. Raise for thin symbols; lower for tight liquid ETFs.
     LIMIT_PRICE_BUFFER_BPS: float = 25.0
 
+    # Order time-in-force.
+    #   DAY               = expires at today's session close
+    #   GOOD_TILL_CANCEL  = stays live across sessions until filled or cancelled
+    # DAY is the conservative default for strategy-driven trading — you want
+    # today's signal acted on today, not three sessions from now when the
+    # setup has decayed.
+    ORDER_DURATION: str = "DAY"
+
+    # Market session the order can route during.
+    #   NORMAL    = regular trading hours only (09:30-16:00 ET)
+    #   SEAMLESS  = regular + pre-market (04:00) + post-market (20:00 ET)
+    # IMPORTANT: Schwab auto-cancels NORMAL/DAY orders submitted outside
+    # regular hours, because there's no session left today to fill them in.
+    # If you run `./run.sh live` overnight or after-hours, set this to
+    # SEAMLESS so Schwab queues the order for the next reachable session.
+    ORDER_SESSION: str = "NORMAL"
+
     # ── Per-strategy live trading toggle ──────────────────────────────
     # Each strategy must be explicitly enabled for live trading.
     # Even with DRY_RUN=false / --live, a strategy with its flag set to

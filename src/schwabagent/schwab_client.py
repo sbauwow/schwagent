@@ -571,15 +571,18 @@ class SchwabClient:
         quantity: int,
         order_type: str | None = None,
         limit_price: float | str | None = None,
+        duration: str | None = None,
+        session: str | None = None,
     ) -> dict:
         """Place an equity order.
 
-        Resolution order when `order_type` / `limit_price` are not passed:
-          1. If `order_type` is None, read `config.ORDER_TYPE` (default "LIMIT").
+        Resolution order when optional args are not passed:
+          1. `order_type` falls back to `config.ORDER_TYPE` (default "LIMIT").
           2. If the resolved type is "LIMIT" and `limit_price` is None, fetch
              a fresh quote and compute a buffered price via
              `_compute_limit_price(side, quote, config.LIMIT_PRICE_BUFFER_BPS)`.
-          3. If `order_type="MARKET"`, `limit_price` is ignored.
+          3. `duration` falls back to `config.ORDER_DURATION` (default "DAY").
+          4. `session` falls back to `config.ORDER_SESSION` (default "NORMAL").
 
         Args:
             account_hash: Schwab account hash (from AccountSummary.account_hash).
@@ -589,10 +592,14 @@ class SchwabClient:
             order_type: "MARKET", "LIMIT", or None to read config.ORDER_TYPE.
             limit_price: Explicit limit price. If None and order_type resolves
                          to "LIMIT", the price is auto-computed from a quote.
+            duration: "DAY", "GOOD_TILL_CANCEL", or None to read config.
+            session: "NORMAL", "SEAMLESS", or None to read config. SEAMLESS
+                     covers pre-market + regular + post-market (04:00-20:00 ET).
 
         Returns:
             Dict with order details and status. On success:
-              {status: "ok", order_id, symbol, side, quantity, order_type, limit_price}
+              {status: "ok", order_id, symbol, side, quantity, order_type,
+               limit_price, duration, session}
             On failure:
               {status: "error", error: "<message>"}
         """
@@ -605,6 +612,7 @@ class SchwabClient:
 
         try:
             import schwab.orders.equities as eq  # type: ignore
+            from schwab.orders.common import Duration, Session  # type: ignore
         except ImportError:
             logger.error("schwab.orders not available")
             return {"status": "error", "error": "schwab.orders not available"}
@@ -617,6 +625,26 @@ class SchwabClient:
         resolved_type = (order_type or self.config.ORDER_TYPE or "LIMIT").upper()
         if resolved_type not in ("MARKET", "LIMIT"):
             return {"status": "error", "error": f"Unknown order_type: {resolved_type}"}
+
+        # Resolve duration + session from config. Look up the enum by name so
+        # an invalid value raises a clean KeyError we can convert to an error
+        # response instead of a cryptic schwab-py failure later.
+        resolved_duration = (duration or self.config.ORDER_DURATION or "DAY").upper()
+        resolved_session = (session or self.config.ORDER_SESSION or "NORMAL").upper()
+        try:
+            duration_enum = Duration[resolved_duration]
+        except KeyError:
+            return {
+                "status": "error",
+                "error": f"Unknown duration: {resolved_duration} (valid: {[d.name for d in Duration]})",
+            }
+        try:
+            session_enum = Session[resolved_session]
+        except KeyError:
+            return {
+                "status": "error",
+                "error": f"Unknown session: {resolved_session} (valid: {[s.name for s in Session]})",
+            }
 
         # Auto-compute limit price from a live quote when LIMIT + no explicit price.
         if resolved_type == "LIMIT" and limit_price is None:
@@ -638,11 +666,18 @@ class SchwabClient:
         self._throttle(_account_limiter)
         try:
             if resolved_type == "MARKET":
-                builder = eq.equity_buy_market if side_upper == "BUY" else eq.equity_sell_market
-                order = builder(symbol, quantity).build()
+                builder_fn = eq.equity_buy_market if side_upper == "BUY" else eq.equity_sell_market
+                builder = builder_fn(symbol, quantity)
             else:  # LIMIT
-                builder = eq.equity_buy_limit if side_upper == "BUY" else eq.equity_sell_limit
-                order = builder(symbol, quantity, price_str).build()
+                builder_fn = eq.equity_buy_limit if side_upper == "BUY" else eq.equity_sell_limit
+                builder = builder_fn(symbol, quantity, price_str)
+
+            order = (
+                builder
+                .set_duration(duration_enum)
+                .set_session(session_enum)
+                .build()
+            )
 
             resp = client.place_order(account_hash, order)
             resp.raise_for_status()
@@ -650,9 +685,10 @@ class SchwabClient:
             # Extract order ID from Location header (may include trailing slash)
             order_id = resp.headers.get("Location", "").rstrip("/").split("/")[-1]
             logger.info(
-                "Order placed: %s %d %s %s%s (id=%s)",
+                "Order placed: %s %d %s %s%s %s/%s (id=%s)",
                 side_upper, quantity, symbol, resolved_type,
                 f" @ ${price_str}" if price_str else "",
+                resolved_duration, resolved_session,
                 order_id,
             )
             return {
@@ -663,12 +699,15 @@ class SchwabClient:
                 "quantity": quantity,
                 "order_type": resolved_type,
                 "limit_price": float(price_str) if price_str else None,
+                "duration": resolved_duration,
+                "session": resolved_session,
             }
         except Exception as e:
             logger.error(
-                "place_order(%s %d %s %s%s) failed: %s",
+                "place_order(%s %d %s %s%s %s/%s) failed: %s",
                 side_upper, quantity, symbol, resolved_type,
-                f" @ ${price_str}" if price_str else "", e,
+                f" @ ${price_str}" if price_str else "",
+                resolved_duration, resolved_session, e,
             )
             return {"status": "error", "error": str(e)}
 

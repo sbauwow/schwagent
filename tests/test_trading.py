@@ -935,6 +935,14 @@ class TestConfigOrderDefaults:
         cfg = Config(SCHWAB_API_KEY="t", SCHWAB_APP_SECRET="t")
         assert cfg.LIMIT_PRICE_BUFFER_BPS == 25.0
 
+    def test_default_duration_is_day(self):
+        cfg = Config(SCHWAB_API_KEY="t", SCHWAB_APP_SECRET="t")
+        assert cfg.ORDER_DURATION == "DAY"
+
+    def test_default_session_is_normal(self):
+        cfg = Config(SCHWAB_API_KEY="t", SCHWAB_APP_SECRET="t")
+        assert cfg.ORDER_SESSION == "NORMAL"
+
     def test_env_override_order_type(self):
         cfg = Config(SCHWAB_API_KEY="t", SCHWAB_APP_SECRET="t", ORDER_TYPE="MARKET")
         assert cfg.ORDER_TYPE == "MARKET"
@@ -942,3 +950,60 @@ class TestConfigOrderDefaults:
     def test_env_override_buffer(self):
         cfg = Config(SCHWAB_API_KEY="t", SCHWAB_APP_SECRET="t", LIMIT_PRICE_BUFFER_BPS=50.0)
         assert cfg.LIMIT_PRICE_BUFFER_BPS == 50.0
+
+    def test_env_override_duration(self):
+        cfg = Config(SCHWAB_API_KEY="t", SCHWAB_APP_SECRET="t", ORDER_DURATION="GOOD_TILL_CANCEL")
+        assert cfg.ORDER_DURATION == "GOOD_TILL_CANCEL"
+
+    def test_env_override_session(self):
+        cfg = Config(SCHWAB_API_KEY="t", SCHWAB_APP_SECRET="t", ORDER_SESSION="SEAMLESS")
+        assert cfg.ORDER_SESSION == "SEAMLESS"
+
+
+class TestOrderBuilderDurationSession:
+    """Verify schwab-py builder produces correct payloads for each combo.
+
+    These are pure-stdlib checks — they exercise the builder directly
+    instead of hitting Schwab, so they catch enum path changes in
+    schwab-py without requiring credentials.
+    """
+
+    def test_day_normal_default(self):
+        import schwab.orders.equities as eq
+        order = eq.equity_buy_limit("TLT", 1, "85.00").build()
+        assert order["duration"] == "DAY"
+        assert order["session"] == "NORMAL"
+
+    def test_gtc_seamless(self):
+        import schwab.orders.equities as eq
+        from schwab.orders.common import Duration, Session
+        order = (
+            eq.equity_buy_limit("TLT", 1, "85.00")
+            .set_duration(Duration.GOOD_TILL_CANCEL)
+            .set_session(Session.SEAMLESS)
+            .build()
+        )
+        assert order["duration"] == "GOOD_TILL_CANCEL"
+        assert order["session"] == "SEAMLESS"
+
+    def test_market_with_gtc_seamless(self):
+        import schwab.orders.equities as eq
+        from schwab.orders.common import Duration, Session
+        order = (
+            eq.equity_buy_market("TLT", 1)
+            .set_duration(Duration.GOOD_TILL_CANCEL)
+            .set_session(Session.SEAMLESS)
+            .build()
+        )
+        assert order["orderType"] == "MARKET"
+        assert order["duration"] == "GOOD_TILL_CANCEL"
+        assert order["session"] == "SEAMLESS"
+
+    def test_enum_name_lookup_matches_string(self):
+        """The wrapper looks up Duration[string] / Session[string] — prove
+        that every name we accept at the config layer is a valid enum key."""
+        from schwab.orders.common import Duration, Session
+        for name in ("DAY", "GOOD_TILL_CANCEL"):
+            assert Duration[name].name == name
+        for name in ("NORMAL", "SEAMLESS"):
+            assert Session[name].name == name
