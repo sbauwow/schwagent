@@ -839,3 +839,106 @@ class TestOrderTrackerPersistence:
         # Verify persistence reflects removal
         tracker2 = OrderTracker(config, state)
         assert tracker2.pending_count == 0
+
+
+# ── _compute_limit_price ─────────────────────────────────────────────────────
+
+
+class _FakeQuote:
+    """Minimal stand-in for schwab_client.Quote for unit tests."""
+
+    def __init__(self, bid: float = 0.0, ask: float = 0.0, last: float = 0.0):
+        self.bid = bid
+        self.ask = ask
+        self.last = last
+
+
+class TestComputeLimitPrice:
+    """Unit tests for the buffered-limit math — no Schwab client needed."""
+
+    def test_buy_uses_ask_plus_buffer(self):
+        from schwabagent.schwab_client import _compute_limit_price
+        q = _FakeQuote(bid=99.98, ask=100.00, last=99.99)
+        # 25 bps of $100 = $0.25, so limit = $100.25
+        assert _compute_limit_price("BUY", q, 25.0) == 100.25
+
+    def test_sell_uses_bid_minus_buffer(self):
+        from schwabagent.schwab_client import _compute_limit_price
+        q = _FakeQuote(bid=100.00, ask=100.02, last=100.01)
+        # 25 bps of $100 = $0.25, so limit = $99.75
+        assert _compute_limit_price("SELL", q, 25.0) == 99.75
+
+    def test_zero_buffer_yields_exact_ask_or_bid(self):
+        from schwabagent.schwab_client import _compute_limit_price
+        q = _FakeQuote(bid=50.00, ask=50.10, last=50.05)
+        assert _compute_limit_price("BUY", q, 0.0) == 50.10
+        assert _compute_limit_price("SELL", q, 0.0) == 50.00
+
+    def test_falls_back_to_last_when_ask_missing(self):
+        from schwabagent.schwab_client import _compute_limit_price
+        q = _FakeQuote(bid=0.0, ask=0.0, last=200.00)
+        assert _compute_limit_price("BUY", q, 25.0) == 200.50
+        assert _compute_limit_price("SELL", q, 25.0) == 199.50
+
+    def test_returns_none_when_no_usable_price(self):
+        from schwabagent.schwab_client import _compute_limit_price
+        q = _FakeQuote(bid=0.0, ask=0.0, last=0.0)
+        assert _compute_limit_price("BUY", q, 25.0) is None
+        assert _compute_limit_price("SELL", q, 25.0) is None
+
+    def test_rounds_to_penny(self):
+        from schwabagent.schwab_client import _compute_limit_price
+        # Ask 86.71 * (1 + 25/10000) = 86.92675 → 86.93
+        q = _FakeQuote(bid=86.67, ask=86.71, last=86.69)
+        result = _compute_limit_price("BUY", q, 25.0)
+        assert result == 86.93
+
+    def test_wider_buffer_is_more_aggressive(self):
+        from schwabagent.schwab_client import _compute_limit_price
+        q = _FakeQuote(bid=100.00, ask=100.00, last=100.00)
+        tight = _compute_limit_price("BUY", q, 10.0)   # 10 bps
+        wide = _compute_limit_price("BUY", q, 100.0)   # 100 bps
+        assert wide > tight
+        assert tight == 100.10
+        assert wide == 101.00
+
+    def test_unknown_side_returns_none(self):
+        from schwabagent.schwab_client import _compute_limit_price
+        q = _FakeQuote(bid=100, ask=100, last=100)
+        assert _compute_limit_price("HOLD", q, 25.0) is None
+
+    def test_case_insensitive_side(self):
+        from schwabagent.schwab_client import _compute_limit_price
+        q = _FakeQuote(bid=100.00, ask=100.10, last=100.05)
+        assert _compute_limit_price("buy", q, 25.0) == _compute_limit_price("BUY", q, 25.0)
+        assert _compute_limit_price("sell", q, 25.0) == _compute_limit_price("SELL", q, 25.0)
+
+    def test_handles_none_attributes_gracefully(self):
+        """Quote dataclass fields can be None if the provider returns nulls."""
+        from schwabagent.schwab_client import _compute_limit_price
+        q = _FakeQuote()
+        q.bid = None
+        q.ask = None
+        q.last = 80.00
+        # 80 * (1 + 50/10000) = 80.40 exactly, no rounding ambiguity
+        assert _compute_limit_price("BUY", q, 50.0) == 80.40
+
+
+class TestConfigOrderDefaults:
+    """The new config fields must default correctly."""
+
+    def test_default_order_type_is_limit(self):
+        cfg = Config(SCHWAB_API_KEY="t", SCHWAB_APP_SECRET="t")
+        assert cfg.ORDER_TYPE == "LIMIT"
+
+    def test_default_buffer_is_25_bps(self):
+        cfg = Config(SCHWAB_API_KEY="t", SCHWAB_APP_SECRET="t")
+        assert cfg.LIMIT_PRICE_BUFFER_BPS == 25.0
+
+    def test_env_override_order_type(self):
+        cfg = Config(SCHWAB_API_KEY="t", SCHWAB_APP_SECRET="t", ORDER_TYPE="MARKET")
+        assert cfg.ORDER_TYPE == "MARKET"
+
+    def test_env_override_buffer(self):
+        cfg = Config(SCHWAB_API_KEY="t", SCHWAB_APP_SECRET="t", LIMIT_PRICE_BUFFER_BPS=50.0)
+        assert cfg.LIMIT_PRICE_BUFFER_BPS == 50.0

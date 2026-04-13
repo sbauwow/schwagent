@@ -65,6 +65,18 @@ class Config(BaseSettings):
     MIN_ORDER_VALUE: float = 100.0    # minimum order size in $
     MAX_ORDER_VALUE: float = 2000.0   # maximum single order in $
 
+    # Default order type for every strategy that calls place_order without
+    # an explicit override. "LIMIT" is safer — it caps slippage. "MARKET"
+    # fills immediately at whatever the book shows.
+    ORDER_TYPE: str = "LIMIT"
+    # Basis-point buffer applied when auto-computing a limit price from a
+    # live quote. Positive values are "aggressive" — BUY limit = ask + bps,
+    # SELL limit = bid - bps, so a round trip costs (2 × bps) + spread. At
+    # 25 bps (0.25%) on a $100 stock the buffer adds $0.25 each side, which
+    # is enough to fill through normal spread wobble without giving away
+    # meaningful edge. Raise for thin symbols; lower for tight liquid ETFs.
+    LIMIT_PRICE_BUFFER_BPS: float = 25.0
+
     # ── Per-strategy live trading toggle ──────────────────────────────
     # Each strategy must be explicitly enabled for live trading.
     # Even with DRY_RUN=false / --live, a strategy with its flag set to

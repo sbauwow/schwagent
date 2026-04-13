@@ -635,8 +635,28 @@ print(format_report(validation))
 | Minimum signal score | `MIN_SIGNAL_SCORE` | 1.0 |
 | Order size floor | `MIN_ORDER_VALUE` | $100 |
 | Order size ceiling | `MAX_ORDER_VALUE` | $2,000 |
+| Default order type | `ORDER_TYPE` | `LIMIT` |
+| Limit price buffer | `LIMIT_PRICE_BUFFER_BPS` | 25 bps (0.25%) |
 
 The kill switch halts all execution until manually cleared from Telegram (`/resume`) or by editing `~/.schwab-agent/risk_state.json`.
+
+### Order routing
+
+Every strategy calls `SchwabClient.place_order(hash, symbol, side, quantity)`. The wrapper then resolves the order type:
+
+1. If the caller passes `order_type="MARKET"` or `order_type="LIMIT"`, that wins.
+2. Otherwise, `config.ORDER_TYPE` wins (default `LIMIT`).
+3. For LIMIT orders with no explicit `limit_price`, the wrapper fetches a live quote and computes a buffered price from the ask (buy) or bid (sell), adjusted by `LIMIT_PRICE_BUFFER_BPS`.
+
+```python
+# BUY  limit = round(ask * (1 + buffer/10000), 2)
+# SELL limit = round(bid * (1 - buffer/10000), 2)
+# Falls back to `last` if bid/ask are missing (thin symbols).
+```
+
+**Why LIMIT by default:** caps slippage in fast markets, protects against bad fills during thin liquidity windows, and makes backtests-to-live reconciliation cleaner. **Set `ORDER_TYPE=MARKET`** in `.env` to restore market-order semantics — useful if you want immediate certainty of execution over price control (e.g. forced liquidations).
+
+**Session caveat:** schwab-agent currently submits every order with `session=NORMAL` + `duration=DAY`. If you call `./run.sh live` after 4:00 PM ET, Schwab will auto-cancel any order that can't route within today's remaining session — so practically, run it during regular trading hours.
 
 ---
 

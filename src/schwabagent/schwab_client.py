@@ -19,6 +19,43 @@ _account_limiter = RateLimiter(max_calls=120, window=60.0)
 _market_limiter = RateLimiter(max_calls=120, window=60.0)
 
 
+def _compute_limit_price(side: str, quote: Any, buffer_bps: float) -> float | None:
+    """Compute an aggressive limit price from a Quote using a basis-point buffer.
+
+    BUY:  base = ask (or last if ask missing), limit = base * (1 + bps/10000)
+    SELL: base = bid (or last if bid missing), limit = base * (1 - bps/10000)
+
+    The "aggressive" direction (above ask / below bid) is deliberate — it's
+    the price we're willing to *cross* the spread at, giving a higher fill
+    probability than sitting on the near side. A positive buffer on a BUY
+    order accepts paying more; on a SELL it accepts receiving less.
+
+    Returns None when no usable price is available (thin symbol with zero
+    bid/ask/last), so the caller can surface a clean error instead of
+    submitting a $0 limit.
+
+    Prices are rounded to 2 decimals (penny tick for US equities).
+    """
+    ask = float(getattr(quote, "ask", 0) or 0)
+    bid = float(getattr(quote, "bid", 0) or 0)
+    last = float(getattr(quote, "last", 0) or 0)
+    direction = side.upper()
+
+    if direction == "BUY":
+        base = ask if ask > 0 else last
+        if base <= 0:
+            return None
+        return round(base * (1 + buffer_bps / 10000.0), 2)
+
+    if direction == "SELL":
+        base = bid if bid > 0 else last
+        if base <= 0:
+            return None
+        return round(base * (1 - buffer_bps / 10000.0), 2)
+
+    return None
+
+
 # ── Data models ────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -532,19 +569,26 @@ class SchwabClient:
         symbol: str,
         side: str,
         quantity: int,
-        order_type: str = "MARKET",
+        order_type: str | None = None,
         limit_price: float | str | None = None,
     ) -> dict:
         """Place an equity order.
+
+        Resolution order when `order_type` / `limit_price` are not passed:
+          1. If `order_type` is None, read `config.ORDER_TYPE` (default "LIMIT").
+          2. If the resolved type is "LIMIT" and `limit_price` is None, fetch
+             a fresh quote and compute a buffered price via
+             `_compute_limit_price(side, quote, config.LIMIT_PRICE_BUFFER_BPS)`.
+          3. If `order_type="MARKET"`, `limit_price` is ignored.
 
         Args:
             account_hash: Schwab account hash (from AccountSummary.account_hash).
             symbol: Ticker symbol.
             side: "BUY" or "SELL".
             quantity: Number of shares.
-            order_type: "MARKET" or "LIMIT".
-            limit_price: Required when order_type="LIMIT". Passed as a string
-                         to schwab-py (it deprecates floats for price fields).
+            order_type: "MARKET", "LIMIT", or None to read config.ORDER_TYPE.
+            limit_price: Explicit limit price. If None and order_type resolves
+                         to "LIMIT", the price is auto-computed from a quote.
 
         Returns:
             Dict with order details and status. On success:
@@ -566,21 +610,34 @@ class SchwabClient:
             return {"status": "error", "error": "schwab.orders not available"}
 
         side_upper = side.upper()
-        type_upper = order_type.upper()
-
         if side_upper not in ("BUY", "SELL"):
             return {"status": "error", "error": f"Unknown side: {side}"}
-        if type_upper not in ("MARKET", "LIMIT"):
-            return {"status": "error", "error": f"Unknown order_type: {order_type}"}
-        if type_upper == "LIMIT" and limit_price is None:
-            return {"status": "error", "error": "limit_price required for LIMIT orders"}
+
+        # Resolve order type from config when the caller doesn't pin it.
+        resolved_type = (order_type or self.config.ORDER_TYPE or "LIMIT").upper()
+        if resolved_type not in ("MARKET", "LIMIT"):
+            return {"status": "error", "error": f"Unknown order_type: {resolved_type}"}
+
+        # Auto-compute limit price from a live quote when LIMIT + no explicit price.
+        if resolved_type == "LIMIT" and limit_price is None:
+            quote = (self.get_quotes([symbol]) or {}).get(symbol)
+            if quote is None:
+                return {"status": "error", "error": f"No quote for {symbol} — cannot compute limit price"}
+            limit_price = _compute_limit_price(
+                side_upper, quote, self.config.LIMIT_PRICE_BUFFER_BPS
+            )
+            if limit_price is None:
+                return {
+                    "status": "error",
+                    "error": f"No usable bid/ask/last for {symbol} — cannot compute limit price",
+                }
 
         # schwab-py deprecated float prices — pass everything as string.
         price_str = f"{float(limit_price):.2f}" if limit_price is not None else None
 
         self._throttle(_account_limiter)
         try:
-            if type_upper == "MARKET":
+            if resolved_type == "MARKET":
                 builder = eq.equity_buy_market if side_upper == "BUY" else eq.equity_sell_market
                 order = builder(symbol, quantity).build()
             else:  # LIMIT
@@ -594,7 +651,7 @@ class SchwabClient:
             order_id = resp.headers.get("Location", "").rstrip("/").split("/")[-1]
             logger.info(
                 "Order placed: %s %d %s %s%s (id=%s)",
-                side_upper, quantity, symbol, type_upper,
+                side_upper, quantity, symbol, resolved_type,
                 f" @ ${price_str}" if price_str else "",
                 order_id,
             )
@@ -604,13 +661,13 @@ class SchwabClient:
                 "symbol": symbol,
                 "side": side_upper,
                 "quantity": quantity,
-                "order_type": type_upper,
+                "order_type": resolved_type,
                 "limit_price": float(price_str) if price_str else None,
             }
         except Exception as e:
             logger.error(
                 "place_order(%s %d %s %s%s) failed: %s",
-                side_upper, quantity, symbol, type_upper,
+                side_upper, quantity, symbol, resolved_type,
                 f" @ ${price_str}" if price_str else "", e,
             )
             return {"status": "error", "error": str(e)}
