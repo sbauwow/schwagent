@@ -273,11 +273,24 @@ TELEGRAM_APPROVAL_TIMEOUT=300
 
 | Command | Description |
 |---------|-------------|
-| `/status` | Account value, cash, positions, kill switch |
-| `/pnl` | P&L by strategy with win rates |
-| `/positions` | Current holdings with unrealized P&L |
+| `/start` | Bot welcome message |
+| `/help` | Show all available commands |
+| `/status` | Account status, balances, positions, kill switch, DRY_RUN |
+| `/pnl` | P&L summary by strategy |
+| `/positions` | Current holdings |
 | `/kill` | Activate kill switch remotely |
 | `/resume` | Clear kill switch |
+| `/scan [N]` | Read-only scan, return top N signals (default 10) |
+| `/regime` | Current intermarket regime + confidence |
+| `/feedback [days]` | Strategy win-rate and P&L analytics |
+| `/drift` | Recent ML drift alerts |
+| `/accounts` | All linked Schwab account summaries |
+| `/risk` | Drawdown + risk rule status |
+| `/recent [N]` | Recent executed trades |
+| `/strategies` | Strategy enabled/live-flag matrix |
+| `/quote SYMBOL` | Live quote for a symbol |
+| `/pf SYMBOL [box=.. rev=.. dur=.. period=..]` | Point & Figure chart in chat |
+| `/toggle <strategy> on|off` | Flip a strategy live flag |
 
 ### Trade approval
 
