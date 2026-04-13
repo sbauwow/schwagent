@@ -50,7 +50,7 @@ class Config(BaseSettings):
     # Bear market filter: True = enable SPY/SMA200 check
     ETF_BEAR_FILTER: bool = True
     # ETFs to permanently exclude regardless of universe setting
-    # Includes all restricted issuer ETFs by default
+    # Blocklist is applied to both ETF_UNIVERSE and SCALP_UNIVERSE
     ETF_BLOCKLIST: str = "MINT,LDUR,SMUR,HYIN,ZROZ,BOND,PDBC,HYLS,LOWV,EMPW,MUNI,INFU,PFFD,REGL"
 
     # ── Risk ──────────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ class Config(BaseSettings):
     ETF_DIVIDEND_LOOKFORWARD_DAYS: int = 3   # avoid buying within N days of ex-date
 
     # ── ETF Scalp strategy ───────────────────────────────────────────
-    # Liquid broad ETFs only — no restricted issuer, no leveraged, no inverse
+    # Liquid broad ETFs only — no leveraged or inverse products
     SCALP_UNIVERSE: str = "SPY,QQQ,IWM,DIA,EFA,EEM,TLT,IEF,GLD,VNQ"
     SCALP_INTERVAL_MINUTES: int = 3           # bar size for signals
     SCALP_TAKE_PROFIT_PCT: float = 0.15       # +0.15% take profit
