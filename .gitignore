@@ -1,6 +1,18 @@
 __pycache__/
 *.pyc
+
+# Local env/secrets
 .env
+.env.*
+!.env.example
+
+# Runtime state / credentials
 data/
 *.db
+*.db-shm
+*.db-wal
+token.json
+market_token.json
+
+# Python env
 .venv/

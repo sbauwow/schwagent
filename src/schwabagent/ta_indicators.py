@@ -1,6 +1,6 @@
 """Technical indicators wrapper around the `ta` library.
 
-Thin schwab-agent-friendly layer over https://github.com/bukosabino/ta
+Thin schwagent-friendly layer over https://github.com/bukosabino/ta
 that accepts a standard OHLCV DataFrame (columns: open, high, low, close,
 volume, indexed by date) and returns either a single indicator Series or
 a feature DataFrame with many indicators ready for ML/backtesting.
@@ -39,7 +39,7 @@ def _ensure_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     """Validate and normalize an OHLCV DataFrame.
 
     Accepts either lowercase columns (open/high/low/close/volume — the
-    schwab-agent convention) or capitalized (Open/High/Low/Close/Volume
+    schwagent convention) or capitalized (Open/High/Low/Close/Volume
     — the yfinance convention). Returns a copy with lowercase columns.
 
     Raises:

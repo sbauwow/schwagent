@@ -8,7 +8,7 @@ performance is signal vs luck:
     Walk-Forward analysis    — is performance consistent across time?
 
 Adapted from HKUDS/vibe-trading (MIT licensed). Unlike the original which
-operates on round-trip TradeRecords, this version uses schwab-agent's
+operates on round-trip TradeRecords, this version uses schwagent's
 BacktestResult (equity_curve + Trade list) directly. Daily equity deltas
 replace per-trade PnLs — simpler and more general.
 """

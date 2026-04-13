@@ -1,4 +1,4 @@
-"""JSON-based state persistence for the schwab-agent."""
+"""JSON-based state persistence for the schwagent."""
 from __future__ import annotations
 
 import json
@@ -10,7 +10,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_STATE_DIR = Path.home() / ".schwab-agent"
+DEFAULT_STATE_DIR = Path.home() / ".schwagent"
 
 
 class StateStore:

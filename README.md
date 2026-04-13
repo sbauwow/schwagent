@@ -1,4 +1,4 @@
-# schwab-agent
+# schwagent
 
 ## ⚠️  DISCLAIMER — READ THIS FIRST
 
@@ -32,10 +32,18 @@ Beyond core trading, the agent includes:
 
 ---
 
+## Public launch notes
+
+- Repo: `https://github.com/sbauwow/schwagent`
+- Safe default: `DRY_RUN=true`
+- Secrets policy: never commit `.env`, OAuth tokens, or local state files
+- Runtime state path: `~/.schwagent/`
+
 ## Quick start
 
 ```bash
-cd ~/Projects/schwab-agent
+git clone https://github.com/sbauwow/schwagent.git
+cd schwagent
 
 # Install dependencies (requires uv)
 uv sync
@@ -73,7 +81,7 @@ $EDITOR .env   # set Schwab credentials at minimum
 | `./run.sh sec SYMBOL [filings\|analyze\|risks\|compare\|scan]` | SEC EDGAR filings lookup, risk extraction, 10-Q comparison, 8-K scan |
 | `./run.sh dream` | Dreamcycle — one autonomous research cycle (scan, drift, auto-tune, digest) |
 | `./run.sh feedback [days]` | Signal feedback: win rate, P&L, drift alerts, calibration by signal type |
-| `./run.sh skills` | List user skills in `~/.schwab-agent/skills/` grouped by category |
+| `./run.sh skills` | List user skills in `~/.schwagent/skills/` grouped by category |
 | `./run.sh web` | Web dashboard at http://localhost:8898 |
 | `./run.sh ref [skill]` | Reference skill library for the LLM overlay |
 | `./run.sh swarm [preset]` | Multi-agent committee workflows |
@@ -489,7 +497,7 @@ features = apply_all(df, exclude=["williams_r"])
 ```
 
 Both `compute` and `apply_all` accept either lowercase OHLCV columns
-(schwab-agent convention) or capitalized columns (yfinance convention).
+(schwagent convention) or capitalized columns (yfinance convention).
 Multi-output indicators are automatically expanded into individual
 columns in `apply_all` so the result is ready to feed to an ML model
 or a backtest.
@@ -640,7 +648,7 @@ print(format_report(validation))
 | Order duration | `ORDER_DURATION` | `DAY` |
 | Order session | `ORDER_SESSION` | `NORMAL` |
 
-The kill switch halts all execution until manually cleared from Telegram (`/resume`) or by editing `~/.schwab-agent/risk_state.json`.
+The kill switch halts all execution until manually cleared from Telegram (`/resume`) or by editing `~/.schwagent/risk_state.json`.
 
 ### Order routing
 
@@ -701,7 +709,7 @@ workflows described above.
 
 ## State files
 
-All state is persisted in `~/.schwab-agent/`:
+All state is persisted in `~/.schwagent/`:
 
 | File | Contents |
 |------|----------|
@@ -778,7 +786,7 @@ uv run ruff check src  # lint
 
 This project stands on a lot of open-source shoulders. Everything below is
 either a runtime dependency or a project whose code/ideas were adapted
-into schwab-agent. If you build on this repo, please keep these credits.
+into schwagent. If you build on this repo, please keep these credits.
 
 ### Quant libraries (runtime dependencies)
 
@@ -812,14 +820,14 @@ The `intelligence/` module (skills library + swarm orchestration) and the
 **[HKUDS/vibe-trading](https://github.com/hkuds/vibe-trading)** (MIT).
 The original is a much broader multi-agent finance workspace for Chinese
 and global markets. This port extracts the portable patterns and adapts
-them to schwab-agent's equity/ETF/options focus:
+them to schwagent's equity/ETF/options focus:
 
 - **Skills loader** — dataclass-based `SkillsLoader` with YAML frontmatter
   and progressive disclosure.
 - **Skill corpus** — 23 of the 68 original skills, curated for US equities.
 - **Swarm orchestration** — DAG scheduling, parallel layer execution, YAML
   preset format. Simplified to single-call agents (no ReAct loop) to fit
-  schwab-agent's existing LLM client.
+  schwagent's existing LLM client.
 - **Backtest validation** — Monte Carlo, Bootstrap, Walk-Forward.
   Monte Carlo reworked to operate on dollar PnLs (not percent returns)
   so the Sharpe test produces meaningful variance.
@@ -861,7 +869,7 @@ The multi-provider `llm.py` talks to whichever of these you configure:
 
 ### License compatibility
 
-schwab-agent is a personal research tool. All runtime dependencies listed
+schwagent is a personal research tool. All runtime dependencies listed
 above are MIT, BSD, or Apache 2.0 — compatible for combination. The
 intelligence-layer port keeps its upstream MIT license; see individual
 skill files and `src/schwabagent/intelligence/` for attribution headers.

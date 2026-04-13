@@ -1,4 +1,4 @@
-# schwab-agent Roadmap
+# schwagent Roadmap
 
 Last updated: 2026-04-13
 

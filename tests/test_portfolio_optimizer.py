@@ -33,7 +33,7 @@ def synthetic_prices() -> pd.DataFrame:
 
 @pytest.fixture
 def ohlcv_dict() -> dict[str, pd.DataFrame]:
-    """Two assets in schwab-agent's OHLCV format."""
+    """Two assets in schwagent's OHLCV format."""
     rng = np.random.default_rng(7)
     n = 120
     dates = pd.date_range("2023-01-01", periods=n, freq="B")

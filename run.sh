@@ -224,7 +224,7 @@ cmd_pnl() {
 import json, os
 from pathlib import Path
 
-state_dir = Path(os.environ.get('STATE_DIR', '~/.schwab-agent')).expanduser()
+state_dir = Path(os.environ.get('STATE_DIR', '~/.schwagent')).expanduser()
 
 # Strategy P&L
 pnl_file = state_dir / 'strategy_pnl.json'
@@ -801,7 +801,7 @@ mgr = SkillsManager()
 skills = mgr.list_skills()
 
 if not skills:
-    print('  No skills found in ~/.schwab-agent/skills/')
+    print('  No skills found in ~/.schwagent/skills/')
     exit(0)
 
 # Group by category

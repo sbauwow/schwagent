@@ -1,7 +1,7 @@
 """YAML preset loader.
 
 Loads a swarm preset YAML file (agents + tasks + variables) and returns
-a SwarmPreset instance. PyYAML is already a dependency of schwab-agent
+a SwarmPreset instance. PyYAML is already a dependency of schwagent
 (used by pydantic-settings).
 """
 from __future__ import annotations

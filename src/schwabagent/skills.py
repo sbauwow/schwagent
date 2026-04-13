@@ -2,7 +2,7 @@
 
 Skills are SKILL.md files with YAML frontmatter organized in a directory tree:
 
-    ~/.schwab-agent/skills/
+    ~/.schwagent/skills/
     ├── category/
     │   └── skill-name/
     │       ├── SKILL.md           # Main instructions (required)
@@ -124,7 +124,7 @@ class SkillsManager:
         if skills_dirs:
             self._dirs = [Path(d).expanduser() for d in skills_dirs]
         else:
-            self._dirs = [Path("~/.schwab-agent/skills").expanduser()]
+            self._dirs = [Path("~/.schwagent/skills").expanduser()]
 
     def list_skills(self, category: str | None = None) -> list[SkillMeta]:
         """List all available skills with metadata only (token-efficient)."""

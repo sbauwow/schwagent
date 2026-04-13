@@ -80,7 +80,7 @@ class SECAnalyzer:
             return
         try:
             from edgar import set_identity
-            set_identity("SchwabAgent admin@schwab-agent.local")
+            set_identity("SchwabAgent admin@schwagent.local")
             self._identity_set = True
         except Exception as e:
             logger.error("Failed to set EDGAR identity: %s", e)

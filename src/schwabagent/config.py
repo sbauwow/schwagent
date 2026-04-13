@@ -14,7 +14,7 @@ class Config(BaseSettings):
     # ── Schwab credentials — Account/Trading API ───────────────────────
     SCHWAB_API_KEY: str = ""
     SCHWAB_APP_SECRET: str = ""
-    SCHWAB_TOKEN_PATH: str = "~/.schwab-agent/token.json"
+    SCHWAB_TOKEN_PATH: str = "~/.schwagent/token.json"
     SCHWAB_CALLBACK_URL: str = "https://127.0.0.1"
     # If empty, the agent will use the first account returned by the API
     SCHWAB_ACCOUNT_HASH: str = ""
@@ -22,7 +22,7 @@ class Config(BaseSettings):
     # ── Schwab credentials — Market Data API ─────────────────────────
     SCHWAB_MARKET_API_KEY: str = ""
     SCHWAB_MARKET_APP_SECRET: str = ""
-    SCHWAB_MARKET_TOKEN_PATH: str = "~/.schwab-agent/market_token.json"
+    SCHWAB_MARKET_TOKEN_PATH: str = "~/.schwagent/market_token.json"
     SCHWAB_MARKET_CALLBACK_URL: str = "https://127.0.0.1"
 
     # ── Watchlist (monitoring — all symbols the agent tracks) ────────────
@@ -159,7 +159,7 @@ class Config(BaseSettings):
     REGIME_REFERENCE_SYMBOLS: str = "SPY,TLT,HYG,GLD,IWM,UUP,VIXY"
 
     # ── State / logging ───────────────────────────────────────────────────
-    STATE_DIR: str = "~/.schwab-agent"
+    STATE_DIR: str = "~/.schwagent"
     LOG_LEVEL: str = "INFO"
 
     # ── Telegram ──────────────────────────────────────────────────────────

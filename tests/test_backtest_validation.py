@@ -22,7 +22,7 @@ from schwabagent.backtest_validation import (
 
 @dataclass
 class _FakeTrade:
-    """Minimal Trade stub matching schwab-agent's Trade interface."""
+    """Minimal Trade stub matching schwagent's Trade interface."""
     symbol: str
     date: str
     side: str = "buy"

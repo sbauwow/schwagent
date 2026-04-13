@@ -1,5 +1,5 @@
 [project]
-name = "schwab-agent"
+name = "schwagent"
 version = "0.1.0"
 description = "Automated equity trading agent for Charles Schwab with multiple quantitative strategies"
 requires-python = ">=3.11"
@@ -26,7 +26,7 @@ dependencies = [
 ]
 
 [project.scripts]
-schwab-agent = "schwabagent.cli:main"
+schwagent = "schwabagent.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -1,7 +1,7 @@
 """Portfolio optimization via PyPortfolioOpt.
 
 Thin wrapper around https://github.com/robertmartin8/PyPortfolioOpt that
-integrates with schwab-agent's SchwabClient for historical OHLCV fetching
+integrates with schwagent's SchwabClient for historical OHLCV fetching
 and returns results in a format the ETF rotation strategy, swarm presets,
 and web dashboard can consume.
 
@@ -108,7 +108,7 @@ def _build_price_frame(
             if df is None or df.empty:
                 logger.warning("Skipping %s — no price data", sym)
                 continue
-            # Try 'close' (schwab-agent standard), fall back to 'Close'
+            # Try 'close' (schwagent standard), fall back to 'Close'
             if "close" in df.columns:
                 cols[sym] = df["close"]
             elif "Close" in df.columns:
@@ -201,7 +201,7 @@ def optimize_portfolio(
         ValueError: On bad inputs (too few symbols, missing target for
             efficient_risk/return, insufficient data, unknown method).
     """
-    # Lazy import so schwab-agent can still import without pypfopt installed
+    # Lazy import so schwagent can still import without pypfopt installed
     from pypfopt import EfficientFrontier, HRPOpt
     from pypfopt.discrete_allocation import DiscreteAllocation, get_latest_prices
 

@@ -1,4 +1,4 @@
-"""Walk-forward backtester for schwab-agent strategies.
+"""Walk-forward backtester for schwagent strategies.
 
 Replays historical OHLCV data through strategy signal logic and simulates
 execution with configurable position sizing, commission, and slippage.

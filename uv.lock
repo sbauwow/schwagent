@@ -1659,7 +1659,7 @@ wheels = [
 ]
 
 [[package]]
-name = "schwab-agent"
+name = "schwagent"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

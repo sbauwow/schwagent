@@ -1,7 +1,7 @@
 """Cron scheduler — persistent scheduled job queue.
 
 Replaces manual `./run.sh loop` with a proper scheduler that survives
-restarts. Jobs are persisted to ~/.schwab-agent/cron.json.
+restarts. Jobs are persisted to ~/.schwagent/cron.json.
 
 Supports:
 - Cron expressions (e.g., "30 9 * * 1-5" = 9:30 weekdays)

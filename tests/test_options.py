@@ -1,4 +1,4 @@
-"""Tests for schwab-agent options pricing and strategy analysis."""
+"""Tests for schwagent options pricing and strategy analysis."""
 from __future__ import annotations
 
 import math

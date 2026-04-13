@@ -471,7 +471,7 @@ class TestStateStoreAudit:
 
 
 class TestStateStoreUseTmpDir:
-    """Ensure StateStore uses tmp directory, not ~/.schwab-agent."""
+    """Ensure StateStore uses tmp directory, not ~/.schwagent."""
 
     def test_uses_provided_dir(self, tmp_path):
         s = StateStore(str(tmp_path))

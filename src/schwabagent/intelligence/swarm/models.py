@@ -2,7 +2,7 @@
 
 Adapted from HKUDS/vibe-trading (MIT licensed). The original uses
 pydantic; we use dataclasses to avoid adding a dependency since
-schwab-agent's pydantic usage is already limited to config.
+schwagent's pydantic usage is already limited to config.
 """
 from __future__ import annotations
 

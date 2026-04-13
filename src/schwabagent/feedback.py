@@ -10,7 +10,7 @@ Implements a predict → trade → observe → adjust cycle:
    signals degrade (e.g., win rate drops below calibrated threshold).
 5. SWEEP: Grid search over strategy parameters using historical data.
 
-All data stored in SQLite at ~/.schwab-agent/feedback.db.
+All data stored in SQLite at ~/.schwagent/feedback.db.
 """
 from __future__ import annotations
 

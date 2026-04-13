@@ -407,7 +407,7 @@ Each contract:
 
 ---
 
-## What schwab-agent Uses Today
+## What schwagent Uses Today
 
 | Data | Source Endpoint | Used By |
 |------|----------------|---------|

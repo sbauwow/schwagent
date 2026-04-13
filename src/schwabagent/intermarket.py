@@ -174,7 +174,7 @@ class RegimeModel:
         ref_str = getattr(config, "REGIME_REFERENCE_SYMBOLS", "SPY,TLT,HYG,GLD,IWM,UUP,VIXY")
         self.reference_symbols = [s.strip().upper() for s in ref_str.split(",") if s.strip()]
         self._previous_regime: Regime | None = None
-        self._regime_path = Path(getattr(config, "STATE_DIR", "~/.schwab-agent")).expanduser() / "regime.json"
+        self._regime_path = Path(getattr(config, "STATE_DIR", "~/.schwagent")).expanduser() / "regime.json"
         self._load_persisted()
 
     # ── Persistence ────────────────────────────────────────────────────────────

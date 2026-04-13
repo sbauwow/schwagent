@@ -13,7 +13,7 @@ from schwabagent.config import Config
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="schwab-agent",
+        prog="schwagent",
         description="Automated equity trading agent for Charles Schwab",
     )
     parser.add_argument("--live", action="store_true", help="Enable live trading (overrides DRY_RUN)")
