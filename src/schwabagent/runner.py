@@ -439,6 +439,68 @@ class AgentRunner:
                 f"(flag only takes effect in <code>./run.sh live</code>)"
             )
 
+        def _pf(args):
+            """Render a Point & Figure chart as a monospace Telegram message.
+
+            Usage:
+              /pf SYMBOL                       defaults: box=0.01 rev=3 dur=1 period=2
+              /pf SYMBOL box=0.02 rev=2        key=value overrides
+              /pf SYMBOL dur=0.5 period=1      shorter lookback
+            """
+            if not args:
+                return (
+                    "Usage: <code>/pf SYMBOL [box=0.01] [rev=3] [dur=1] [period=2]</code>\n"
+                    "Example: <code>/pf SPY box=0.02 rev=2</code>"
+                )
+            symbol = args[0].upper()
+
+            # Parse key=value overrides
+            params: dict[str, float] = {"box": 0.01, "rev": 3, "dur": 1.0, "period": 2.0}
+            for arg in args[1:]:
+                if "=" not in arg:
+                    continue
+                k, v = arg.split("=", 1)
+                k = k.strip().lower()
+                if k in params:
+                    try:
+                        params[k] = float(v)
+                    except ValueError:
+                        return f"Invalid value for <code>{_e(k)}</code>: {_e(v)}"
+
+            from schwabagent.pf import create_pf_chart
+            chart = create_pf_chart(
+                symbol=symbol,
+                client=self.client,
+                box_size=params["box"],
+                reversal=int(params["rev"]),
+                duration=params["dur"],
+                period=params["period"],
+                method="HL",
+                style=False,          # no ANSI, Telegram can't render it
+                trend_lines=True,
+            )
+
+            # Extract latest meta entry for the summary line
+            meta = chart.chart_meta_data
+            latest = list(meta.values())[-1] if meta else {}
+            signal = str(latest.get("signal", "?"))
+            status = str(latest.get("status", "?"))
+
+            body = (chart.chart or "").strip("\n")
+            # Cap at Telegram's 4096 char limit minus wrapper overhead
+            max_body = 3600
+            if len(body) > max_body:
+                body = body[-max_body:]
+                body = "... (truncated)\n" + body
+
+            return (
+                f"<b>P&amp;F {_e(symbol)}</b>  "
+                f"box={params['box']:.2%} rev={int(params['rev'])} "
+                f"dur={params['dur']:g}y period={params['period']:g}y\n"
+                f"Signal: <b>{_e(signal)}</b>  Status: {_e(status)}\n"
+                f"<pre>{_e(body)}</pre>"
+            )
+
         bot.register_command("status", _safe(_status), "Account status and connectivity")
         bot.register_command("pnl", _safe(_pnl), "P&L summary by strategy")
         bot.register_command("positions", _safe(_positions), "Current holdings")
@@ -453,6 +515,7 @@ class AgentRunner:
         bot.register_command("recent", _safe(_recent), "Recent executed trades")
         bot.register_command("strategies", _safe(_strategies), "Strategy enable + live flags")
         bot.register_command("quote", _safe(_quote), "Quote for SYMBOL")
+        bot.register_command("pf", _safe(_pf), "Point & Figure chart (box=, rev=, dur=, period=)")
         bot.register_command("toggle", _safe(_toggle), "Flip a strategy's live flag")
 
     def _persist_live_flag(self, attr: str, value: bool) -> None:
