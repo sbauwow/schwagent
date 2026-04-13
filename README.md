@@ -744,12 +744,43 @@ uv run ruff check src  # lint
 
 ## Credits
 
+This project stands on a lot of open-source shoulders. Everything below is
+either a runtime dependency or a project whose code/ideas were adapted
+into schwab-agent. If you build on this repo, please keep these credits.
+
+### Quant libraries (runtime dependencies)
+
+- **[PyPortfolioOpt](https://github.com/robertmartin8/PyPortfolioOpt)** by
+  Robert Martin (MIT) — all portfolio optimization (`portfolio_optimizer.py`)
+  routes to this: max Sharpe, min volatility, Hierarchical Risk Parity,
+  efficient frontier, Ledoit-Wolf / exponential covariance, discrete share
+  allocation. The `./run.sh optimize` command is a thin wrapper.
+- **[ta](https://github.com/bukosabino/ta)** by Dario López Padial (MIT) —
+  35+ trend/momentum/volatility/volume indicators. Wrapped in
+  `ta_indicators.py` and exposed via `./run.sh ta` alongside the hand-rolled
+  indicators the strategies use internally.
+- **[pypf](https://github.com/fxrialab/pypf)** — Point & Figure charting.
+  Used by `pf.py` and `./run.sh pf <SYMBOL>` to render P&F charts directly
+  from Schwab OHLC data with configurable box size and reversal.
+
+### Brokerage and data
+
+- **[schwab-py](https://github.com/alexgolec/schwab-py)** by Alex Golec
+  (MIT) — the Schwab Trader API / Market Data API client. Every order,
+  every quote, every account fetch goes through it. Both OAuth2 apps
+  (account and market data) are wired through schwab-py's auth helpers.
+- **[edgartools](https://github.com/dgunning/edgartools)** — SEC EDGAR
+  filing retrieval. Powers `sec.py` and `./run.sh sec` (10-K/10-Q/8-K
+  retrieval, risk factor extraction, filing comparison).
+
+### Intelligence layer (adapted source)
+
 The `intelligence/` module (skills library + swarm orchestration) and the
 `backtest_validation.py` module are adapted from
-[HKUDS/vibe-trading](https://github.com/hkuds/vibe-trading) (MIT licensed).
-The original project provides a much broader multi-agent finance workspace
-for Chinese and global markets. This port extracts the portable patterns
-and adapts them to schwab-agent's equity/ETF/options focus:
+**[HKUDS/vibe-trading](https://github.com/hkuds/vibe-trading)** (MIT).
+The original is a much broader multi-agent finance workspace for Chinese
+and global markets. This port extracts the portable patterns and adapts
+them to schwab-agent's equity/ETF/options focus:
 
 - **Skills loader** — dataclass-based `SkillsLoader` with YAML frontmatter
   and progressive disclosure.
@@ -764,3 +795,41 @@ and adapts them to schwab-agent's equity/ETF/options focus:
   vibe-trading's `options_pricing_tool.py`, extended with an implied
   volatility bisection solver, multi-leg payoff analysis, and strategy
   constructors. Pure stdlib + numpy; no scipy dependency.
+
+### Framework and infrastructure
+
+- **[pandas](https://github.com/pandas-dev/pandas)** /
+  **[numpy](https://github.com/numpy/numpy)** — dataframes and numerics
+  underpin every strategy, backtest, and indicator.
+- **[pydantic](https://github.com/pydantic/pydantic)** /
+  **pydantic-settings** — `Config` uses pydantic-settings for typed
+  `.env` loading and field validation.
+- **[FastAPI](https://github.com/tiangolo/fastapi)** /
+  **[uvicorn](https://github.com/encode/uvicorn)** — the web dashboard
+  (`web/`, `./run.sh web`).
+- **[python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)**
+  — the Telegram integration (`telegram.py`): command dispatch, alerts,
+  inline-button trade approval, and the 15-command bot menu.
+- **[rich](https://github.com/Textualize/rich)** — every table, colored
+  output, and status panel printed by `./run.sh` commands.
+- **[croniter](https://github.com/kiorky/croniter)** — cron expression
+  parsing for the scheduler.
+- **[beautifulsoup4](https://www.crummy.com/software/BeautifulSoup/)** —
+  HTML parsing for SEC filings and scraped research.
+- **[httpx](https://github.com/encode/httpx)** /
+  **[requests](https://github.com/psf/requests)** — HTTP transport.
+
+### LLM providers
+
+The multi-provider `llm.py` talks to whichever of these you configure:
+
+- **[Ollama](https://github.com/ollama/ollama)** — local models (default),
+- **[Anthropic Claude API](https://docs.anthropic.com/)** — hosted,
+- any **OpenAI-compatible** endpoint (LM Studio, vLLM, OpenAI itself).
+
+### License compatibility
+
+schwab-agent is a personal research tool. All runtime dependencies listed
+above are MIT, BSD, or Apache 2.0 — compatible for combination. The
+intelligence-layer port keeps its upstream MIT license; see individual
+skill files and `src/schwabagent/intelligence/` for attribution headers.
