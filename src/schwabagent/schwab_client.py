@@ -243,8 +243,19 @@ class SchwabClient:
     # ── Account ───────────────────────────────────────────────────────────────
 
     def get_all_accounts(self) -> list[AccountSummary]:
-        """Return a summary for every account linked to these credentials."""
+        """Return a summary for every account linked to these credentials.
+
+        Each summary carries the real Schwab account hash (required by every
+        order endpoint). Hashes come from a separate `/accounts/accountNumbers`
+        endpoint — the balances endpoint only returns account numbers, not
+        hashes, so we pair the two here.
+        """
         client = self._require_client()
+
+        hash_map = self._get_account_hash_map()
+        if not hash_map:
+            return []
+
         self._throttle(_account_limiter)
         try:
             resp = client.get_accounts(fields=[client.Account.Fields.POSITIONS])
@@ -257,10 +268,42 @@ class SchwabClient:
         summaries = []
         for item in raw_accounts:
             acct = item.get("securitiesAccount", {})
-            summary = self._parse_account(acct)
+            number = str(acct.get("accountNumber", ""))
+            hv = hash_map.get(number, "")
+            if not hv:
+                logger.warning("No hash found for account %s — order endpoints will fail", number[-4:] if number else "?")
+            summary = self._parse_account(acct, account_hash=hv)
             if summary:
                 summaries.append(summary)
         return summaries
+
+    def _get_account_hash_map(self) -> dict[str, str]:
+        """Fetch the `{account_number: hash_value}` map from Schwab.
+
+        Cached for the process lifetime — account hashes don't change unless
+        the user links/unlinks an account at Schwab. Reset by clearing
+        `self._account_hash_map`.
+        """
+        cached = getattr(self, "_account_hash_map", None)
+        if cached:
+            return cached
+
+        client = self._require_client()
+        self._throttle(_account_limiter)
+        try:
+            resp = client.get_account_numbers()
+            resp.raise_for_status()
+            mapping: dict[str, str] = {}
+            for m in resp.json() or []:
+                num = m.get("accountNumber")
+                hv = m.get("hashValue")
+                if num and hv:
+                    mapping[str(num)] = str(hv)
+            self._account_hash_map = mapping
+            return mapping
+        except Exception as e:
+            logger.error("get_account_numbers failed: %s", e)
+            return {}
 
     def get_account_summary(self, account_hash: str) -> AccountSummary | None:
         """Return summary for a specific account hash."""
@@ -286,10 +329,6 @@ class SchwabClient:
             cash = float(balance.get("cashBalance", balance.get("availableFunds", 0)))
             unsettled = float(balance.get("unsettledCash", 0))
             acct_number = acct.get("accountNumber", "****")
-            # The account hash comes from the parent wrapper in list responses
-            # or from the direct get_account call
-            if not account_hash:
-                account_hash = acct.get("accountId", "")
 
             positions = []
             for pos in acct.get("positions", []):
@@ -494,47 +533,70 @@ class SchwabClient:
         side: str,
         quantity: int,
         order_type: str = "MARKET",
+        limit_price: float | str | None = None,
     ) -> dict:
         """Place an equity order.
 
         Args:
-            account_hash: Schwab account hash (from AccountSummary).
+            account_hash: Schwab account hash (from AccountSummary.account_hash).
             symbol: Ticker symbol.
             side: "BUY" or "SELL".
             quantity: Number of shares.
             order_type: "MARKET" or "LIMIT".
+            limit_price: Required when order_type="LIMIT". Passed as a string
+                         to schwab-py (it deprecates floats for price fields).
 
         Returns:
-            Dict with order details and status.
+            Dict with order details and status. On success:
+              {status: "ok", order_id, symbol, side, quantity, order_type, limit_price}
+            On failure:
+              {status: "error", error: "<message>"}
         """
         client = self._require_client()
-        self._throttle(_account_limiter)
+
+        if not account_hash:
+            return {"status": "error", "error": "empty account_hash (use SchwabClient.get_all_accounts to populate)"}
+        if quantity <= 0:
+            return {"status": "error", "error": f"Invalid quantity: {quantity}"}
+
         try:
             import schwab.orders.equities as eq  # type: ignore
         except ImportError:
             logger.error("schwab.orders not available")
             return {"status": "error", "error": "schwab.orders not available"}
 
-        if quantity <= 0:
-            return {"status": "error", "error": f"Invalid quantity: {quantity}"}
-
         side_upper = side.upper()
+        type_upper = order_type.upper()
+
+        if side_upper not in ("BUY", "SELL"):
+            return {"status": "error", "error": f"Unknown side: {side}"}
+        if type_upper not in ("MARKET", "LIMIT"):
+            return {"status": "error", "error": f"Unknown order_type: {order_type}"}
+        if type_upper == "LIMIT" and limit_price is None:
+            return {"status": "error", "error": "limit_price required for LIMIT orders"}
+
+        # schwab-py deprecated float prices — pass everything as string.
+        price_str = f"{float(limit_price):.2f}" if limit_price is not None else None
+
+        self._throttle(_account_limiter)
         try:
-            if side_upper == "BUY":
-                order = eq.equity_buy_market(symbol, quantity)
-            elif side_upper == "SELL":
-                order = eq.equity_sell_market(symbol, quantity)
-            else:
-                return {"status": "error", "error": f"Unknown side: {side}"}
+            if type_upper == "MARKET":
+                builder = eq.equity_buy_market if side_upper == "BUY" else eq.equity_sell_market
+                order = builder(symbol, quantity).build()
+            else:  # LIMIT
+                builder = eq.equity_buy_limit if side_upper == "BUY" else eq.equity_sell_limit
+                order = builder(symbol, quantity, price_str).build()
 
             resp = client.place_order(account_hash, order)
             resp.raise_for_status()
 
-            # Extract order ID from Location header
-            order_id = resp.headers.get("Location", "").split("/")[-1]
+            # Extract order ID from Location header (may include trailing slash)
+            order_id = resp.headers.get("Location", "").rstrip("/").split("/")[-1]
             logger.info(
-                "Order placed: %s %d %s (id=%s)",
-                side_upper, quantity, symbol, order_id,
+                "Order placed: %s %d %s %s%s (id=%s)",
+                side_upper, quantity, symbol, type_upper,
+                f" @ ${price_str}" if price_str else "",
+                order_id,
             )
             return {
                 "status": "ok",
@@ -542,10 +604,15 @@ class SchwabClient:
                 "symbol": symbol,
                 "side": side_upper,
                 "quantity": quantity,
-                "order_type": order_type,
+                "order_type": type_upper,
+                "limit_price": float(price_str) if price_str else None,
             }
         except Exception as e:
-            logger.error("place_order(%s %d %s) failed: %s", side_upper, quantity, symbol, e)
+            logger.error(
+                "place_order(%s %d %s %s%s) failed: %s",
+                side_upper, quantity, symbol, type_upper,
+                f" @ ${price_str}" if price_str else "", e,
+            )
             return {"status": "error", "error": str(e)}
 
     def cancel_order(self, account_hash: str, order_id: str) -> bool:
@@ -569,8 +636,31 @@ class SchwabClient:
             "market_api": _market_limiter.stats(),
         }
 
+    # Statuses that mean "order is still live and could fill" — anything not
+    # in this set is either terminal (FILLED, CANCELED, EXPIRED, REJECTED)
+    # or a transient state we don't treat as open.
+    _OPEN_ORDER_STATUSES = frozenset({
+        "PENDING_ACTIVATION",
+        "WORKING",
+        "AWAITING_PARENT_ORDER",
+        "AWAITING_CONDITION",
+        "AWAITING_MANUAL_REVIEW",
+        "AWAITING_UR_OUT",
+        "AWAITING_RELEASE_TIME",
+        "AWAITING_STOP_CONDITION",
+        "QUEUED",
+        "ACCEPTED",
+        "NEW",
+    })
+
     def get_open_orders(self, account_hash: str) -> list[dict]:
-        """Return all open orders for an account."""
+        """Return all open (non-terminal) orders for an account.
+
+        Fetches every order entered in the last 24h and filters client-side
+        for statuses that mean "still live." We avoid the server-side
+        `status=` filter because schwab-py's strict enum mode rejects string
+        values and the enum path changes between versions.
+        """
         client = self._require_client()
         self._throttle(_account_limiter)
         try:
@@ -578,10 +668,10 @@ class SchwabClient:
                 account_hash,
                 from_entered_datetime=datetime.now(timezone.utc) - timedelta(days=1),
                 to_entered_datetime=datetime.now(timezone.utc),
-                status="WORKING",
             )
             resp.raise_for_status()
-            return resp.json() or []
+            orders = resp.json() or []
+            return [o for o in orders if o.get("status") in self._OPEN_ORDER_STATUSES]
         except Exception as e:
             logger.error("get_open_orders(%s) failed: %s", account_hash[:8], e)
             return []
