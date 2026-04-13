@@ -161,76 +161,318 @@ class AgentRunner:
         return bot
 
     def _register_telegram_commands(self, bot) -> None:
-        """Register bot command handlers that return MarkdownV2 text."""
-        from schwabagent.telegram import _escape_md
+        """Register bot command handlers that return HTML text.
 
-        def _status_handler() -> str:
-            try:
-                account = self._get_account()
-                risk = self.risk.status(account=account)
-                tr = risk.get("trading_rules", {})
-                lines = [
-                    "*Schwab Agent Status*\n",
-                    f"Account: `{account.account_number}` \\({tr.get('account_type', '?')}\\)",
-                    f"Value: ${account.total_value:,.2f}",
-                    f"Cash: ${account.cash_available:,.2f}",
-                    f"Positions: {len(account.positions)}",
-                    f"Kill switch: {'YES' if risk['killed'] else 'no'}",
-                    f"DRY\\_RUN: {self.config.DRY_RUN}",
-                ]
-                return "\n".join(lines)
-            except Exception as e:
-                return f"*Error:* `{_escape_md(str(e))}`"
+        Each handler accepts a list of string args from the Telegram command
+        line (e.g. `/toggle momentum on` → args=["momentum", "on"]) and returns
+        Telegram-HTML formatted output. Only &, <, > need escaping — numbers,
+        percents, dots, dashes, and equals are all literal.
+        """
+        import html
 
-        def _pnl_handler() -> str:
-            try:
-                summary = self.get_pnl_summary()
-                if not summary:
-                    return "No P&L data yet\\."
-                lines = ["*P&L Summary*\n"]
-                total = 0.0
-                for strat, data in sorted(summary.items()):
-                    pnl = data.get("realized_pnl", 0)
-                    trades = data.get("trades", 0)
-                    wr = data.get("win_rate", 0)
-                    total += pnl
-                    sign = "\\+" if pnl >= 0 else ""
-                    lines.append(f"`{_escape_md(strat)}` {sign}${pnl:,.2f} \\({trades}t, {wr:.0f}%\\)")
-                sign = "\\+" if total >= 0 else ""
-                lines.append(f"\n*Total: {sign}${total:,.2f}*")
-                return "\n".join(lines)
-            except Exception as e:
-                return f"*Error:* `{_escape_md(str(e))}`"
+        def _e(s) -> str:
+            """HTML-escape any string for safe interpolation."""
+            return html.escape(str(s))
 
-        def _positions_handler() -> str:
-            try:
-                account = self._get_account()
-                if not account.positions:
-                    return "No open positions\\."
-                lines = ["*Current Positions*\n"]
-                for p in account.positions:
-                    pnl_str = f"${p.unrealized_pnl:+,.2f}" if p.unrealized_pnl else ""
-                    lines.append(
-                        f"`{_escape_md(p.symbol)}` {p.quantity:.0f} shares "
-                        f"@ ${p.avg_price:,.2f} {_escape_md(pnl_str)}"
-                    )
-                return "\n".join(lines)
-            except Exception as e:
-                return f"*Error:* `{_escape_md(str(e))}`"
+        def _safe(fn):
+            def _wrapped(args):
+                try:
+                    return fn(args)
+                except Exception as e:
+                    logger.exception("Telegram handler failed")
+                    return f"<b>Error:</b> <code>{_e(str(e))[:400]}</code>"
+            return _wrapped
 
-        def _kill_handler() -> str:
+        def _status(args):
+            account = self._get_account()
+            risk = self.risk.status(account=account)
+            tr = risk.get("trading_rules", {})
+            lines = [
+                "<b>Schwab Agent Status</b>",
+                "",
+                f"Account: <code>{_e(account.account_number)}</code> ({_e(tr.get('account_type', '?'))})",
+                f"Value: ${account.total_value:,.2f}",
+                f"Cash: ${account.cash_available:,.2f}",
+                f"Positions: {len(account.positions)}",
+                f"Kill switch: {'YES' if risk['killed'] else 'no'}",
+                f"DRY_RUN: {self.config.DRY_RUN}",
+            ]
+            return "\n".join(lines)
+
+        def _pnl(args):
+            summary = self.get_pnl_summary()
+            if not summary:
+                return "No P&amp;L data yet."
+            lines = ["<b>P&amp;L Summary</b>", ""]
+            total = 0.0
+            for strat, data in sorted(summary.items()):
+                pnl = data.get("realized_pnl", 0)
+                trades = data.get("trades", 0)
+                wr = data.get("win_rate", 0)
+                total += pnl
+                sign = "+" if pnl >= 0 else ""
+                lines.append(
+                    f"<code>{_e(strat)}</code> {sign}${pnl:,.2f} ({trades}t, {wr:.0f}%)"
+                )
+            sign = "+" if total >= 0 else ""
+            lines.append(f"\n<b>Total: {sign}${total:,.2f}</b>")
+            return "\n".join(lines)
+
+        def _positions(args):
+            account = self._get_account()
+            if not account.positions:
+                return "No open positions."
+            lines = ["<b>Current Positions</b>", ""]
+            for p in account.positions:
+                pnl_str = f" {('+' if p.unrealized_pnl >= 0 else '')}${p.unrealized_pnl:,.2f}" if p.unrealized_pnl else ""
+                lines.append(
+                    f"<code>{_e(p.symbol)}</code> {p.quantity:.0f} shares "
+                    f"@ ${p.avg_price:,.2f}{pnl_str}"
+                )
+            return "\n".join(lines)
+
+        def _kill(args):
             self.risk.kill("Manual kill via Telegram")
-            return "*Kill switch activated\\.* All trading halted\\."
+            return "<b>Kill switch activated.</b> All trading halted."
 
-        def _resume_handler() -> str:
+        def _resume(args):
             self.risk.unkill()
-            return "*Kill switch cleared\\.* Trading may resume\\."
+            return "<b>Kill switch cleared.</b> Trading may resume."
 
-        bot.register_command("status", _status_handler)
-        bot.register_command("pnl", _pnl_handler)
-        bot.register_command("positions", _positions_handler)
-        bot.register_command("kill", _kill_handler)
-        bot.register_command("resume", _resume_handler)
+        def _scan(args):
+            limit = int(args[0]) if args and args[0].isdigit() else 10
+            signals = self.scan_only()
+            if not signals:
+                return "No signals."
+            ranked = sorted(signals, key=lambda s: abs(s.get("score", 0)), reverse=True)[:limit]
+            lines = [f"<b>Top {len(ranked)} signals</b>", ""]
+            for s in ranked:
+                sym = s.get("symbol", "?")
+                strat = s.get("strategy", "?")
+                score = s.get("score", 0)
+                sig = s.get("signal", s.get("side", "?"))
+                lines.append(
+                    f"<code>{_e(sym)}</code> {_e(sig)} "
+                    f"score={score:+.2f} <i>{_e(strat)}</i>"
+                )
+            return "\n".join(lines)
+
+        def _regime(args):
+            if not self.config.REGIME_ENABLED:
+                return "Regime detection is disabled in config."
+            info = self.get_regime()
+            if not info:
+                return "Regime detection unavailable."
+            name = info.get("regime", "?")
+            conf = info.get("confidence", 0)
+            lines = ["<b>Intermarket Regime</b>", "", f"Current: <b>{_e(name)}</b>"]
+            if isinstance(conf, (int, float)):
+                lines.append(f"Confidence: {conf*100:.0f}%")
+            if self.current_regime is not None:
+                lines.append("\n<b>Sizing factors:</b>")
+                for sname in sorted(self.config._STRATEGY_LIVE_FLAGS.keys()):
+                    try:
+                        f = regime_sizing_factor(self.current_regime, sname)
+                        lines.append(f"  <code>{_e(sname)}</code>: {f:.2f}x")
+                    except Exception:
+                        pass
+            sigs = info.get("signals") or {}
+            if isinstance(sigs, dict) and sigs:
+                lines.append("\n<b>Signals:</b>")
+                for k, v in list(sigs.items())[:10]:
+                    lines.append(f"  <code>{_e(k)}</code>: {_e(str(v))[:60]}")
+            return "\n".join(lines)
+
+        def _feedback(args):
+            days = int(args[0]) if args and args[0].isdigit() else 30
+            summary = self.feedback.get_strategy_summary(days=days)
+            if not summary:
+                return f"No feedback data in last {days}d."
+            lines = [f"<b>Feedback — last {days}d</b>", ""]
+            for strat, d in sorted(summary.items()):
+                total = d.get("total_signals", 0)
+                resolved = d.get("resolved") or 0
+                wins = d.get("wins") or 0
+                wr = (wins / resolved * 100) if resolved else 0
+                pnl = d.get("total_pnl") or 0
+                sign = "+" if pnl >= 0 else ""
+                lines.append(
+                    f"<code>{_e(strat)}</code> n={total} wr={wr:.0f}% pnl={sign}${pnl:,.2f}"
+                )
+            return "\n".join(lines)
+
+        def _drift(args):
+            alerts = self.feedback.get_drift_alerts(days=7)
+            if not alerts:
+                return "No drift alerts in last 7d."
+            lines = ["<b>Drift Alerts (7d)</b>", ""]
+            for a in alerts[:15]:
+                level = str(a.get("alert_level", "?")).upper()
+                strat = a.get("strategy", "?")
+                metric = a.get("metric", "?")
+                baseline = a.get("baseline_value", 0)
+                current = a.get("current_value", 0)
+                dev = a.get("deviation_pct", 0)
+                lines.append(
+                    f"<b>{_e(level)}</b> <code>{_e(strat)}</code> "
+                    f"{_e(metric)}: {baseline:.1f}→{current:.1f} "
+                    f"({dev:+.0f}%)"
+                )
+            return "\n".join(lines)
+
+        def _accounts(args):
+            accounts = self.client.get_all_accounts()
+            if not accounts:
+                return "No accounts."
+            lines = ["<b>Accounts</b>", ""]
+            total = 0.0
+            for a in accounts:
+                total += a.total_value
+                lines.append(
+                    f"<code>{_e(a.account_number)}</code> "
+                    f"${a.total_value:,.0f} cash ${a.cash_available:,.0f} "
+                    f"pos={len(a.positions)}"
+                )
+            lines.append(f"\n<b>Total: ${total:,.2f}</b>")
+            return "\n".join(lines)
+
+        def _risk(args):
+            account = self._get_account()
+            st = self.risk.status(account=account)
+            lines = ["<b>Risk Status</b>", ""]
+            lines.append(f"Killed: {'YES' if st.get('killed') else 'no'}")
+            if "peak_value" in st:
+                lines.append(f"Peak: ${st['peak_value']:,.2f}")
+            if "current_drawdown_pct" in st:
+                lines.append(f"Drawdown: {st['current_drawdown_pct']:.2f}%")
+            if "max_drawdown_pct" in st:
+                lines.append(f"Max DD limit: {st['max_drawdown_pct']:.1f}%")
+            tr = st.get("trading_rules", {})
+            if tr:
+                lines.append(f"Account type: <code>{_e(tr.get('account_type', '?'))}</code>")
+                if "day_trades_remaining" in tr:
+                    lines.append(f"Day trades left: {tr['day_trades_remaining']}")
+            return "\n".join(lines)
+
+        def _recent(args):
+            limit = int(args[0]) if args and args[0].isdigit() else 10
+            trades = self.state.get_trade_history(limit=limit)
+            if not trades:
+                return "No trade history."
+            lines = [f"<b>Recent {len(trades)} trades</b>", ""]
+            for t in reversed(trades):
+                sym = t.get("symbol", "?")
+                side = t.get("side", "?")
+                qty = t.get("quantity", 0)
+                price = t.get("price", 0)
+                strat = t.get("strategy", "?")
+                pnl = t.get("realized_pnl")
+                dry = "DRY" if t.get("dry_run", True) else "LIVE"
+                pnl_str = f" pnl={('+' if pnl >= 0 else '')}${pnl:,.2f}" if pnl is not None else ""
+                lines.append(
+                    f"<code>{_e(sym)}</code> {_e(side)} {qty}@${price:,.2f} "
+                    f"<i>{_e(strat)}</i> [{dry}]{pnl_str}"
+                )
+            return "\n".join(lines)
+
+        def _strategies(args):
+            lines = ["<b>Strategies</b>", "", f"DRY_RUN: {self.config.DRY_RUN}", ""]
+            flag_map = self.config._STRATEGY_LIVE_FLAGS
+            for name in sorted(flag_map.keys()):
+                enabled = name in self.config.strategies
+                live = bool(getattr(self.config, flag_map[name], False))
+                if enabled and live and not self.config.DRY_RUN:
+                    state = "LIVE"
+                elif enabled:
+                    state = "DRY" if self.config.DRY_RUN else "GATED"
+                else:
+                    state = "OFF"
+                lines.append(
+                    f"<code>{_e(name)}</code> "
+                    f"enabled={'Y' if enabled else 'n'} "
+                    f"live_flag={'Y' if live else 'n'} → <b>{state}</b>"
+                )
+            return "\n".join(lines)
+
+        def _quote(args):
+            if not args:
+                return "Usage: <code>/quote SYMBOL</code>"
+            sym = args[0].upper()
+            quotes = self.client.get_quotes([sym])
+            q = quotes.get(sym) if quotes else None
+            if not q:
+                return f"No quote for <code>{_e(sym)}</code>."
+            last = q.last or 0
+            bid = q.bid or 0
+            ask = q.ask or 0
+            chg_pct = q.change_pct or 0
+            vol = q.volume or 0
+            sign = "+" if chg_pct >= 0 else ""
+            return (
+                f"<b>{_e(sym)}</b>\n"
+                f"Last: ${last:,.2f}\n"
+                f"Bid/Ask: ${bid:,.2f} / ${ask:,.2f}\n"
+                f"Change: {sign}{chg_pct:.2f}%\n"
+                f"Volume: {vol:,.0f}\n"
+                f"Spread: ${q.spread or 0:.4f} ({q.spread_pct or 0:.3f}%)"
+            )
+
+        def _toggle(args):
+            if len(args) < 2 or args[1].lower() not in ("on", "off"):
+                names = ", ".join(f"<code>{_e(n)}</code>" for n in self.config._STRATEGY_LIVE_FLAGS)
+                return (
+                    "Usage: <code>/toggle &lt;strategy&gt; on|off</code>\n"
+                    f"Strategies: {names}"
+                )
+            name = args[0].lower()
+            state = args[1].lower() == "on"
+            attr = self.config._STRATEGY_LIVE_FLAGS.get(name)
+            if attr is None:
+                return f"Unknown strategy <code>{_e(name)}</code>."
+            old = bool(getattr(self.config, attr, False))
+            setattr(self.config, attr, state)
+            self._persist_live_flag(attr, state)
+            return (
+                f"<b>{_e(name)}</b> live flag: "
+                f"{'ON' if old else 'OFF'} → <b>{'ON' if state else 'OFF'}</b>\n"
+                f"Global DRY_RUN={self.config.DRY_RUN} "
+                f"(flag only takes effect in <code>./run.sh live</code>)"
+            )
+
+        bot.register_command("status", _safe(_status), "Account status and connectivity")
+        bot.register_command("pnl", _safe(_pnl), "P&L summary by strategy")
+        bot.register_command("positions", _safe(_positions), "Current holdings")
+        bot.register_command("kill", _safe(_kill), "Activate kill switch")
+        bot.register_command("resume", _safe(_resume), "Deactivate kill switch")
+        bot.register_command("scan", _safe(_scan), "Read-only scan — top N signals")
+        bot.register_command("regime", _safe(_regime), "Current intermarket regime")
+        bot.register_command("feedback", _safe(_feedback), "Win-rate + P&L per strategy")
+        bot.register_command("drift", _safe(_drift), "ML feedback drift alerts")
+        bot.register_command("accounts", _safe(_accounts), "All Schwab account summaries")
+        bot.register_command("risk", _safe(_risk), "Risk status + drawdown")
+        bot.register_command("recent", _safe(_recent), "Recent executed trades")
+        bot.register_command("strategies", _safe(_strategies), "Strategy enable + live flags")
+        bot.register_command("quote", _safe(_quote), "Quote for SYMBOL")
+        bot.register_command("toggle", _safe(_toggle), "Flip a strategy's live flag")
+
+    def _persist_live_flag(self, attr: str, value: bool) -> None:
+        """Rewrite .env in place so a runtime flag flip survives restart."""
+        env_path = Path(__file__).resolve().parents[2] / ".env"
+        if not env_path.exists():
+            return
+        try:
+            lines = env_path.read_text().splitlines()
+            updated = False
+            for i, line in enumerate(lines):
+                if line.startswith(f"{attr}="):
+                    lines[i] = f"{attr}={'true' if value else 'false'}"
+                    updated = True
+                    break
+            if not updated:
+                lines.append(f"{attr}={'true' if value else 'false'}")
+            env_path.write_text("\n".join(lines) + "\n")
+        except OSError as e:
+            logger.warning("Failed to persist %s to .env: %s", attr, e)
 
     def _init_client(self) -> SchwabClient:
         client = SchwabClient(self.config)

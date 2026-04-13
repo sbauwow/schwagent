@@ -70,6 +70,10 @@ $EDITOR .env   # set Schwab credentials at minimum
 | `./run.sh options price\|iv\|strategy` | Black-Scholes pricing, IV solver, multi-leg strategy analysis |
 | `./run.sh optimize <tickers>` | Portfolio optimization (max Sharpe, min vol, HRP) via PyPortfolioOpt |
 | `./run.sh ta [list\|<indicator> <symbol>]` | 35+ technical indicators via the `ta` library |
+| `./run.sh sec SYMBOL [filings\|analyze\|risks\|compare\|scan]` | SEC EDGAR filings lookup, risk extraction, 10-Q comparison, 8-K scan |
+| `./run.sh dream` | Dreamcycle — one autonomous research cycle (scan, drift, auto-tune, digest) |
+| `./run.sh feedback [days]` | Signal feedback: win rate, P&L, drift alerts, calibration by signal type |
+| `./run.sh skills` | List user skills in `~/.schwab-agent/skills/` grouped by category |
 | `./run.sh web` | Web dashboard at http://localhost:8898 |
 | `./run.sh ref [skill]` | Reference skill library for the LLM overlay |
 | `./run.sh swarm [preset]` | Multi-agent committee workflows |

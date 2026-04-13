@@ -3,7 +3,7 @@
 Provides:
 - Push alerts for trades, kill switch, daily P&L, errors
 - Interactive trade approval with inline buttons (approve/reject)
-- Bot commands: /status, /pnl, /positions, /kill, /resume
+- Dynamic bot commands registered via register_command()
 """
 from __future__ import annotations
 
@@ -60,7 +60,8 @@ class TelegramBot:
         self._app = None
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._command_handlers: dict[str, Callable] = {}
+        # name -> (handler(args) -> markdown_v2_text, menu_description)
+        self._command_handlers: dict[str, tuple[Callable[[list[str]], str], str]] = {}
 
     def start(self) -> None:
         """Start the bot in a background thread."""
@@ -83,13 +84,11 @@ class TelegramBot:
         self._loop.run_until_complete(self._start_polling())
 
     async def _start_polling(self) -> None:
-        from telegram import BotCommand, Update
+        from telegram import BotCommand
         from telegram.ext import (
             Application,
             CallbackQueryHandler,
             CommandHandler,
-            MessageHandler,
-            filters,
         )
 
         self._app = (
@@ -98,27 +97,22 @@ class TelegramBot:
             .build()
         )
 
-        # Register command handlers
+        # Static commands (handled inline, no runner dependency)
         self._app.add_handler(CommandHandler("start", self._cmd_start))
-        self._app.add_handler(CommandHandler("status", self._cmd_status))
-        self._app.add_handler(CommandHandler("pnl", self._cmd_pnl))
-        self._app.add_handler(CommandHandler("positions", self._cmd_positions))
-        self._app.add_handler(CommandHandler("kill", self._cmd_kill))
-        self._app.add_handler(CommandHandler("resume", self._cmd_resume))
         self._app.add_handler(CommandHandler("help", self._cmd_help))
+
+        # Dynamic commands — one dispatcher per name in _command_handlers
+        for name in self._command_handlers:
+            self._app.add_handler(CommandHandler(name, self._make_dispatcher(name)))
 
         # Inline button callback handler (for trade approval)
         self._app.add_handler(CallbackQueryHandler(self._handle_callback))
 
-        # Set bot command menu
-        await self._app.bot.set_my_commands([
-            BotCommand("status", "Account status and connectivity"),
-            BotCommand("pnl", "P&L summary by strategy"),
-            BotCommand("positions", "Current holdings"),
-            BotCommand("kill", "Activate kill switch"),
-            BotCommand("resume", "Deactivate kill switch"),
-            BotCommand("help", "Show available commands"),
-        ])
+        # Build bot command menu from registered handlers + static entries
+        menu = [BotCommand("help", "Show available commands")]
+        for name, (_, desc) in self._command_handlers.items():
+            menu.append(BotCommand(name, desc[:256]))
+        await self._app.bot.set_my_commands(menu)
 
         await self._app.initialize()
         await self._app.start()
@@ -149,74 +143,56 @@ class TelegramBot:
         if not self._check_authorized(update.effective_chat.id):
             return
         await update.message.reply_text(
-            "*Schwab Agent Bot*\n\n"
-            "Use /help to see available commands\\.",
-            parse_mode="MarkdownV2",
+            "<b>Schwab Agent Bot</b>\n\nUse /help to see available commands.",
+            parse_mode="HTML",
         )
 
     async def _cmd_help(self, update, context) -> None:
+        import html
         if not self._check_authorized(update.effective_chat.id):
             return
-        await update.message.reply_text(
-            "*Available Commands*\n\n"
-            "/status \\- Account status and connectivity\n"
-            "/pnl \\- P&L summary by strategy\n"
-            "/positions \\- Current holdings\n"
-            "/kill \\- Activate kill switch \\(stop all trading\\)\n"
-            "/resume \\- Deactivate kill switch\n"
-            "/help \\- This message",
-            parse_mode="MarkdownV2",
-        )
+        lines = ["<b>Available Commands</b>\n"]
+        for name, (_, desc) in self._command_handlers.items():
+            lines.append(f"/{name} — {html.escape(desc)}")
+        lines.append("/help — This message")
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
-    async def _cmd_status(self, update, context) -> None:
-        if not self._check_authorized(update.effective_chat.id):
-            return
-        handler = self._command_handlers.get("status")
-        if handler:
-            text = handler()
-            await update.message.reply_text(text, parse_mode="MarkdownV2")
-        else:
-            await update.message.reply_text("Status handler not registered\\.", parse_mode="MarkdownV2")
+    def _make_dispatcher(self, name: str):
+        """Build an async CommandHandler callback that invokes the registered handler.
 
-    async def _cmd_pnl(self, update, context) -> None:
-        if not self._check_authorized(update.effective_chat.id):
-            return
-        handler = self._command_handlers.get("pnl")
-        if handler:
-            text = handler()
-            await update.message.reply_text(text, parse_mode="MarkdownV2")
-        else:
-            await update.message.reply_text("P&L handler not registered\\.", parse_mode="MarkdownV2")
+        Dynamic command replies use parse_mode=HTML — far fewer reserved
+        characters than MarkdownV2, so numeric output ($215.23, 50%, etc.)
+        works without escape gymnastics. Only <, >, and & need escaping.
+        """
+        import html
 
-    async def _cmd_positions(self, update, context) -> None:
-        if not self._check_authorized(update.effective_chat.id):
-            return
-        handler = self._command_handlers.get("positions")
-        if handler:
-            text = handler()
-            await update.message.reply_text(text, parse_mode="MarkdownV2")
-        else:
-            await update.message.reply_text("Positions handler not registered\\.", parse_mode="MarkdownV2")
+        async def _dispatch(update, context) -> None:
+            if not self._check_authorized(update.effective_chat.id):
+                return
+            entry = self._command_handlers.get(name)
+            if entry is None:
+                await update.message.reply_text(
+                    f"Handler for /{name} not registered.",
+                    parse_mode="HTML",
+                )
+                return
+            handler, _ = entry
+            args = list(context.args) if context.args else []
+            try:
+                text = handler(args)
+            except Exception as e:
+                logger.exception("Telegram command /%s failed", name)
+                text = f"<b>Error in /{name}:</b> <code>{html.escape(str(e))[:400]}</code>"
+            if not text:
+                text = "<i>(empty)</i>"
+            try:
+                await update.message.reply_text(text, parse_mode="HTML")
+            except Exception as e:
+                # Fall back to plain text if HTML parsing fails for any reason.
+                logger.warning("HTML reply failed (%s) — sending plain text", e)
+                await update.message.reply_text(text[:4000])
 
-    async def _cmd_kill(self, update, context) -> None:
-        if not self._check_authorized(update.effective_chat.id):
-            return
-        handler = self._command_handlers.get("kill")
-        if handler:
-            text = handler()
-            await update.message.reply_text(text, parse_mode="MarkdownV2")
-        else:
-            await update.message.reply_text("Kill handler not registered\\.", parse_mode="MarkdownV2")
-
-    async def _cmd_resume(self, update, context) -> None:
-        if not self._check_authorized(update.effective_chat.id):
-            return
-        handler = self._command_handlers.get("resume")
-        if handler:
-            text = handler()
-            await update.message.reply_text(text, parse_mode="MarkdownV2")
-        else:
-            await update.message.reply_text("Resume handler not registered\\.", parse_mode="MarkdownV2")
+        return _dispatch
 
     # ── Callback query handler (inline buttons) ─────────────────────────
 
@@ -257,14 +233,20 @@ class TelegramBot:
 
     # ── Public API: register command handlers ────────────────────────────
 
-    def register_command(self, command: str, handler: Callable[[], str]) -> None:
+    def register_command(
+        self,
+        command: str,
+        handler: Callable[[list[str]], str],
+        description: str = "",
+    ) -> None:
         """Register a handler that returns MarkdownV2 text for a bot command.
 
         Args:
             command: Command name without slash (e.g. "status")
-            handler: Callable that returns MarkdownV2 formatted string
+            handler: Callable taking a list of space-split args, returning MarkdownV2
+            description: One-line menu description shown in Telegram's command picker
         """
-        self._command_handlers[command] = handler
+        self._command_handlers[command] = (handler, description or command)
 
     # ── Public API: send alerts ──────────────────────────────────────────
 

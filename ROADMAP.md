@@ -1,6 +1,6 @@
 # schwab-agent Roadmap
 
-Last updated: 2026-04-10
+Last updated: 2026-04-13
 
 ## Current State
 
@@ -46,19 +46,23 @@ Last updated: 2026-04-10
 - Full analysis toolkit (31 indicators, fundamentals, SEC filings, LLM)
 - Self-improvement loop (ML feedback, auto-tuner, dreamcycle)
 - Telegram bot with trade approval
+- **S1**: Test coverage 70 → 544 passing, failing `test_total_exposure_cap` fixed
+- **S3**: Intermarket regime model — `intermarket.py`, 7-signal macro (SPY/TLT/HYG/GLD/IWM/DXY/VIX), regime classifier
+- **S4**: Regime-aware strategy weighting wired into `runner.py`
+- **S5**: Liquidity + dividend filters for scalp and rotation strategies
+- **M2 → shipped early**: Portfolio optimizer (PyPortfolioOpt) — `portfolio_optimizer.py`, max Sharpe, min vol, HRP, efficient frontier
+- **L1 → shipped early**: Web dashboard (FastAPI) — `web/`, accounts, positions, trades, P&L at `localhost:8898`
+- Backtest validation (Monte Carlo, Bootstrap Sharpe CI, Walk-Forward)
+- Options analysis (Black-Scholes, IV solver, multi-leg strategy builders)
+- Technical indicators library (`ta_indicators.py`, 35+ indicators)
+- Intelligence layer: 23 reference skills + swarm multi-agent presets
 
 ---
 
 ## Short Term — Make It Profitable (next 2 weeks)
 
 *Focus: the agent has tools but no intelligence about WHEN to use them.
-Regime awareness is the single highest-ROI improvement.*
-
-### S1. Fix Failing Test + Coverage
-- [ ] Fix test_total_exposure_cap (risk check ordering)
-- [ ] Add tests for each strategy (generate_signals + basic flow)
-- [ ] Target: 120+ tests (from 70)
-- [ ] GitHub Actions CI (ruff + pytest)
+S1, S3, S4, S5 are done. S2 (earnings avoidance) is the only remaining near-term item.*
 
 ### S2. Earnings Calendar Avoidance
 - [ ] Build earnings calendar from Schwab `fundamental.lastEarningsDate` + SEC 8-K
@@ -67,28 +71,8 @@ Regime awareness is the single highest-ROI improvement.*
 - [ ] Add earnings dates to Telegram daily digest
 - [ ] **~150 lines** — `src/schwabagent/earnings.py`
 
-### S3. Intermarket Regime Model
-- [ ] 7-signal macro model from cross-asset prices (SPY, TLT, HYG, GLD, IWM, DXY, VIX)
-- [ ] Regime classification: Bull, Bear, Correction, Stagflation, Recovery, Risk-Off
-- [ ] Historical regime backtest (2000-2026) to validate signal accuracy
-- [ ] **~400 lines** — `src/schwabagent/intermarket.py`
-
-### S4. Regime-Aware Strategy Weighting
-- [ ] Map each regime → strategy weight overrides:
-  - Bull: Momentum ↑, ETF Rotation ↑, Mean Reversion ↓
-  - Bear: Trend Following ↑, ETF Rotation (inverse ETFs), Momentum ↓
-  - Correction: Mean Reversion ↑, Scalp ↑, Momentum ↓
-  - Stagflation: Trend Following (commodities), Conviction Hold (pause)
-  - Risk-Off: All strategies reduce sizing 50%, ETF Rotation favors TLT/GLD
-- [ ] Integrate into runner.py position sizing
-- [ ] Telegram alert on regime changes
-- [ ] **~200 lines** — update `runner.py` + `config.py`
-
-### S5. Liquidity + Dividend Filters
-- [ ] Scalp: skip symbols with avg volume < 1M or spread > 0.10%
-- [ ] ETF Rotation: factor in ex-dividend dates (avoid buying day before ex-date for tax)
-- [ ] Add volume and spread data to signal output
-- [ ] **~100 lines** — integrate into strategy scans
+### S6. GitHub Actions CI
+- [ ] ruff + pytest on push/PR (carried over from S1)
 
 ---
 
@@ -106,13 +90,11 @@ Regime awareness is the single highest-ROI improvement.*
 - [ ] Per-account P&L + aggregate P&L
 - [ ] **~300 lines** — `src/schwabagent/portfolio.py`
 
-### M2. Portfolio Optimizer (MPT)
-- [ ] Mean-variance optimization via `pypfopt`
-- [ ] Strategies: Max Sharpe, Min Volatility, Risk Parity, HRP
-- [ ] Constraints: max position size, sector limits, min diversification
-- [ ] Rebalance recommendations with trade list
+### M2. Portfolio Optimizer — runner integration
+- [x] Core library shipped (`portfolio_optimizer.py`, PyPortfolioOpt: max Sharpe, min vol, HRP, efficient frontier)
 - [ ] Integrate into runner: optimizer suggests target weights, strategies execute toward them
-- [ ] **~300 lines** — `src/schwabagent/optimizer.py`
+- [ ] Rebalance recommendations with trade list
+- [ ] Constraints: max position size, sector limits, min diversification
 
 ### M3. Tax-Aware Execution
 - [ ] Route trades to optimal account (HSA for active, taxable for long-term)
@@ -152,15 +134,13 @@ Regime awareness is the single highest-ROI improvement.*
 
 *Focus: run this like a real portfolio with institutional-grade process.*
 
-### L1. Web Dashboard
-- [ ] FastAPI + Jinja2 at localhost:5000
-- [ ] Pages: portfolio overview, ETF rankings, strategy signals, positions, P&L history
+### L1. Web Dashboard — phase 2
+- [x] Core dashboard shipped (`web/`, FastAPI, port 8898): accounts, positions, trades, P&L
 - [ ] Risk dashboard: drawdown chart, exposure heatmap, regime indicator
 - [ ] Backtest viewer with parameter sweep results
 - [ ] SEC filing browser
 - [ ] Point & Figure chart viewer
 - [ ] Strategy config editor (adjust parameters without code changes)
-- [ ] **~500 lines** — `src/schwabagent/web/`
 
 ### L2. Advanced Regime Intelligence
 - [ ] Macro factor model (yield curve slope, credit spreads, ISM PMI, unemployment claims)
