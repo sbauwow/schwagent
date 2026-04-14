@@ -45,19 +45,53 @@ Beyond core trading, the agent includes:
 git clone https://github.com/sbauwow/schwagent.git
 cd schwagent
 
-# Install dependencies (requires uv)
+# Install dependencies
 uv sync
 
 # Configure
 cp .env.example .env
 $EDITOR .env   # set Schwab credentials at minimum
 
-# Authenticate — opens browser for OAuth
+# Enroll OAuth tokens (Trader + optional Market Data app)
 ./run.sh enroll
 
 # Dry-run scan — see signals, no trades
 ./run.sh scan
 ```
+
+### Install dependencies
+
+`schwagent` uses Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+
+```bash
+# install uv (if missing)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# from repo root
+uv sync
+
+# run commands inside project env
+uv run ./run.sh status
+```
+
+### Enroll Schwab credentials (required)
+
+Before `scan`, `once`, `loop`, or `live`, you must enroll at least the Trader app token.
+
+```bash
+cp .env.example .env
+$EDITOR .env
+# set:
+# SCHWAB_API_KEY
+# SCHWAB_APP_SECRET
+# SCHWAB_CALLBACK_URL (must match Schwab portal app callback)
+
+./run.sh enroll
+```
+
+Notes:
+- `enroll` opens OAuth flow and writes token files under `~/.schwagent/`.
+- If you configured Market Data keys, enroll that app too when prompted.
 
 ---
 
@@ -256,11 +290,21 @@ Push alerts and interactive trade management via Telegram bot.
 
 ```bash
 TELEGRAM_ENABLED=true
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-TELEGRAM_CHAT_ID=your_numeric_id
+TELEGRAM_BOT_TOKEN=<bot_token_from_botfather>
+TELEGRAM_CHAT_ID=<your_numeric_chat_id>
 TELEGRAM_REQUIRE_APPROVAL=true
 TELEGRAM_APPROVAL_TIMEOUT=300
 ```
+
+4. Start the agent (bot starts automatically when `TELEGRAM_ENABLED=true`):
+
+```bash
+./run.sh status   # quick connectivity/config check
+./run.sh loop     # normal bot-enabled runtime
+# or: ./run.sh live
+```
+
+5. In Telegram, send `/start` then `/help` to verify command registration.
 
 ### Alerts (agent → you)
 
