@@ -32,13 +32,6 @@ Beyond core trading, the agent includes:
 
 ---
 
-## Public launch notes
-
-- Repo: `https://github.com/sbauwow/schwagent`
-- Safe default: `DRY_RUN=true`
-- Secrets policy: never commit `.env`, OAuth tokens, or local state files
-- Runtime state path: `~/.schwagent/`
-
 ## Quick start
 
 ```bash
