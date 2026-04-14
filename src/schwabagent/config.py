@@ -49,9 +49,6 @@ class Config(BaseSettings):
     ETF_SAFE_HAVEN: str = "SHY"
     # Bear market filter: True = enable SPY/SMA200 check
     ETF_BEAR_FILTER: bool = True
-    # ETFs to permanently exclude regardless of universe setting
-    # Blocklist is applied to both ETF_UNIVERSE and SCALP_UNIVERSE
-    ETF_BLOCKLIST: str = "MINT,LDUR,SMUR,HYIN,ZROZ,BOND,PDBC,HYLS,LOWV,EMPW,MUNI,INFU,PFFD,REGL"
 
     # ── Risk ──────────────────────────────────────────────────────────────
     MAX_POSITION_PCT: float = 0.10       # max 10% of portfolio per position
@@ -228,17 +225,8 @@ class Config(BaseSettings):
         return [s.strip().lower() for s in self.STRATEGIES.split(",") if s.strip()]
 
     @property
-    def etf_blocklist(self) -> set[str]:
-        return {s.strip().upper() for s in self.ETF_BLOCKLIST.split(",") if s.strip()}
-
-    @property
     def etf_universe(self) -> list[str]:
-        blocked = self.etf_blocklist
-        return [
-            s.strip().upper()
-            for s in self.ETF_UNIVERSE.split(",")
-            if s.strip() and s.strip().upper() not in blocked
-        ]
+        return [s.strip().upper() for s in self.ETF_UNIVERSE.split(",") if s.strip()]
 
     @property
     def etf_momentum_periods(self) -> list[int]:
@@ -260,12 +248,7 @@ class Config(BaseSettings):
 
     @property
     def scalp_universe(self) -> list[str]:
-        blocked = self.etf_blocklist
-        return [
-            s.strip().upper()
-            for s in self.SCALP_UNIVERSE.split(",")
-            if s.strip() and s.strip().upper() not in blocked
-        ]
+        return [s.strip().upper() for s in self.SCALP_UNIVERSE.split(",") if s.strip()]
 
     def is_strategy_live(self, strategy_name: str) -> bool:
         """Check if a strategy is enabled for live trading.
