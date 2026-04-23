@@ -308,6 +308,138 @@ class TestTradingRulesCheckOrder:
         assert allowed
 
 
+class TestTradingRulesEventBlackout:
+    """Earnings / ex-dividend blackout gate, fed from the scraper cache files."""
+
+    @staticmethod
+    def _write_earnings_cache(tmp_dir: str, symbol: str, days_out: int):
+        path = Path(tmp_dir) / "earnings_calendar.json"
+        target = (datetime.now(timezone.utc).date() + timedelta(days=days_out)).isoformat()
+        path.write_text(json.dumps({
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "rows": [{
+                "date": target, "session": "AMC", "company": "Test Co",
+                "symbol": symbol, "confirmed": True, "reported": False,
+                "actual_eps": None, "consensus_eps": 1.0,
+                "year_ago_eps": 0.9, "yoy_rev_pct": 5.0,
+            }],
+        }))
+
+    @staticmethod
+    def _write_dividend_cache(tmp_dir: str, symbol: str, days_out: int):
+        path = Path(tmp_dir) / "dividend_calendar.json"
+        target = (datetime.now(timezone.utc).date() + timedelta(days=days_out)).isoformat()
+        path.write_text(json.dumps({
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "rows": [{
+                "ex_date": target, "symbol": symbol, "company": "Test Co",
+                "amount": 0.5, "annual_dividend": 2.0,
+                "payment_date": target, "record_date": target,
+                "announce_date": target,
+            }],
+        }))
+
+    def test_missing_cache_fails_open(self, rules):
+        """No cache file → order allowed (fail-open)."""
+        allowed, reason = rules.check_order(
+            symbol="AAPL", side="BUY", quantity=10, price=150.0,
+            account_value=50_000.0,
+        )
+        assert allowed
+        assert reason == ""
+
+    def test_earnings_within_window_warns_by_default(self, tmp_dir, state, caplog):
+        """Default mode is 'warn' — order allowed but warning logged."""
+        self._write_earnings_cache(tmp_dir, "AAPL", days_out=1)
+        cfg = _make_config(tmp_dir)
+        rules = TradingRules(cfg, state)
+        import logging
+        with caplog.at_level(logging.WARNING, logger="schwabagent.trading_rules"):
+            allowed, reason = rules.check_order(
+                symbol="AAPL", side="BUY", quantity=10, price=150.0,
+                account_value=50_000.0,
+            )
+        assert allowed
+        assert "earnings blackout" in caplog.text.lower()
+
+    def test_earnings_block_mode_rejects(self, tmp_dir, state):
+        self._write_earnings_cache(tmp_dir, "AAPL", days_out=1)
+        cfg = _make_config(tmp_dir, EARNINGS_BLACKOUT_MODE="block")
+        rules = TradingRules(cfg, state)
+        allowed, reason = rules.check_order(
+            symbol="AAPL", side="BUY", quantity=10, price=150.0,
+            account_value=50_000.0,
+        )
+        assert not allowed
+        assert "earnings blackout" in reason.lower()
+
+    def test_earnings_outside_window_passes(self, tmp_dir, state):
+        self._write_earnings_cache(tmp_dir, "AAPL", days_out=10)
+        cfg = _make_config(tmp_dir, EARNINGS_BLACKOUT_MODE="block")
+        rules = TradingRules(cfg, state)
+        allowed, reason = rules.check_order(
+            symbol="AAPL", side="BUY", quantity=10, price=150.0,
+            account_value=50_000.0,
+        )
+        assert allowed
+
+    def test_earnings_blackout_does_not_block_sells(self, tmp_dir, state):
+        self._write_earnings_cache(tmp_dir, "AAPL", days_out=1)
+        cfg = _make_config(tmp_dir, EARNINGS_BLACKOUT_MODE="block")
+        rules = TradingRules(cfg, state)
+        allowed, reason = rules.check_order(
+            symbol="AAPL", side="SELL", quantity=10, price=150.0,
+            account_value=50_000.0,
+        )
+        assert allowed
+
+    def test_dividend_blackout_opt_in(self, tmp_dir, state):
+        """Dividend gate is off by default, even with fresh cache."""
+        self._write_dividend_cache(tmp_dir, "KO", days_out=0)
+        cfg = _make_config(tmp_dir)  # DIVIDEND_BLACKOUT_ENABLED default False
+        rules = TradingRules(cfg, state)
+        allowed, reason = rules.check_order(
+            symbol="KO", side="BUY", quantity=10, price=60.0,
+            account_value=50_000.0,
+        )
+        assert allowed
+
+    def test_dividend_blackout_blocks_when_enabled(self, tmp_dir, state):
+        self._write_dividend_cache(tmp_dir, "KO", days_out=0)
+        cfg = _make_config(
+            tmp_dir,
+            DIVIDEND_BLACKOUT_ENABLED=True,
+            DIVIDEND_BLACKOUT_MODE="block",
+        )
+        rules = TradingRules(cfg, state)
+        allowed, reason = rules.check_order(
+            symbol="KO", side="BUY", quantity=10, price=60.0,
+            account_value=50_000.0,
+        )
+        assert not allowed
+        assert "ex-dividend" in reason.lower()
+
+    def test_cache_refresh_on_mtime_change(self, tmp_dir, state):
+        """Rewriting the cache picks up new rows without restarting the process."""
+        self._write_earnings_cache(tmp_dir, "AAPL", days_out=10)
+        cfg = _make_config(tmp_dir, EARNINGS_BLACKOUT_MODE="block")
+        rules = TradingRules(cfg, state)
+        # Warm the cache
+        rules.check_order(
+            symbol="AAPL", side="BUY", quantity=10, price=150.0,
+            account_value=50_000.0,
+        )
+        # Bump mtime by rewriting with earnings now inside the window
+        time.sleep(0.01)
+        self._write_earnings_cache(tmp_dir, "AAPL", days_out=1)
+        allowed, reason = rules.check_order(
+            symbol="AAPL", side="BUY", quantity=10, price=150.0,
+            account_value=50_000.0,
+        )
+        assert not allowed
+        assert "earnings blackout" in reason.lower()
+
+
 class TestTradingRulesStatus:
     """status() returns a summary dict."""
 

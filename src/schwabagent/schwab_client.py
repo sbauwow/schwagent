@@ -84,6 +84,62 @@ class AccountSummary:
 
 
 @dataclass
+class Straddle:
+    """ATM straddle candidate — matched call + put at same strike/expiry."""
+    underlying: str
+    underlying_price: float
+    strike: float
+    expiration: str      # YYYY-MM-DD
+    dte: int
+    call: "OptionContract"
+    put: "OptionContract"
+
+    @property
+    def cost(self) -> float:
+        """Combined ask (what you'd pay to open long straddle)."""
+        return self.call.ask + self.put.ask
+
+    @property
+    def mid_cost(self) -> float:
+        return (self.call.mark or (self.call.bid + self.call.ask) / 2) + \
+               (self.put.mark or (self.put.bid + self.put.ask) / 2)
+
+    @property
+    def iv(self) -> float:
+        """Average of call and put IV (Schwab returns percent)."""
+        return (self.call.iv + self.put.iv) / 2
+
+    @property
+    def gamma(self) -> float:
+        return self.call.gamma + self.put.gamma
+
+    @property
+    def gamma_per_dollar(self) -> float:
+        """Gamma per $1 of extrinsic paid — higher = more ownership per dollar."""
+        c = self.cost
+        return self.gamma / c if c > 0 else 0.0
+
+
+@dataclass
+class OptionContract:
+    """One option chain row."""
+    symbol: str              # OSI symbol, e.g. "SPY   260515P00450000"
+    underlying: str
+    side: str                # "PUT" or "CALL"
+    strike: float
+    expiration: str          # YYYY-MM-DD
+    dte: int
+    bid: float
+    ask: float
+    mark: float
+    delta: float             # signed (puts negative)
+    gamma: float             # always ≥ 0 for long options
+    iv: float                # implied volatility (percent, as schwab returns)
+    open_interest: int
+    volume: int
+
+
+@dataclass
 class Quote:
     symbol: str
     bid: float
@@ -708,6 +764,857 @@ class SchwabClient:
                 side_upper, quantity, symbol, resolved_type,
                 f" @ ${price_str}" if price_str else "",
                 resolved_duration, resolved_session, e,
+            )
+            return {"status": "error", "error": str(e)}
+
+    # ── Multi-leg: covered call (buy-write) ──────────────────────────────────
+
+    def place_buy_write(
+        self,
+        account_hash: str,
+        stock_symbol: str,
+        option_osi: str,
+        contracts: int,
+        stock_limit: float | None = None,
+        call_limit: float | None = None,
+        duration_child: str = "GOOD_TILL_CANCEL",
+    ) -> dict:
+        """Place a covered-call (buy-write) as a TRIGGER chain.
+
+        Parent is an equity BUY LIMIT for `contracts * 100` shares. On fill,
+        Schwab atomically triggers the child: an option SELL_TO_OPEN LIMIT
+        for `contracts` contracts at `call_limit`. No leg risk — the option
+        short never fires until the stock long is filled.
+
+        Args:
+            account_hash: Schwab account hash.
+            stock_symbol: Underlying ticker (e.g. "KO").
+            option_osi: OSI option symbol as returned in OptionContract.symbol
+                        (schwab-py's `option_sell_to_open_limit` accepts it
+                        as-is; no need to reformat via OptionSymbol builder).
+            contracts: Number of option contracts (>=1). The equity leg is
+                       sized at `contracts * 100` shares.
+            stock_limit: Equity leg limit price. None → auto-compute from
+                         a live quote using LIMIT_PRICE_BUFFER_BPS (same
+                         buffered-BUY path as place_order).
+            call_limit: Option leg limit price. Required — caller should
+                        pass the opportunity's call_bid (conservative fill).
+                        None is rejected; the screener already has bid/ask.
+            duration_child: Option leg TIF. Defaults to GOOD_TILL_CANCEL so
+                            the write outlives the equity fill day.
+
+        Returns:
+            On success:
+              {status: "ok", parent_order_id, child_order_id: None,
+               stock_symbol, option_symbol, contracts, shares, stock_limit,
+               call_limit, duration_child}
+            On failure:
+              {status: "error", error: "<message>"}
+        """
+        client = self._require_client()
+
+        if not account_hash:
+            return {"status": "error", "error": "empty account_hash"}
+        if not stock_symbol:
+            return {"status": "error", "error": "empty stock_symbol"}
+        if not option_osi:
+            return {"status": "error", "error": "empty option_osi"}
+        if contracts < 1:
+            return {"status": "error", "error": f"contracts must be >=1: {contracts}"}
+        if call_limit is None:
+            return {"status": "error", "error": "call_limit required (pass opportunity call_bid)"}
+        if float(call_limit) <= 0:
+            return {"status": "error", "error": f"call_limit must be > 0: {call_limit}"}
+
+        try:
+            import schwab.orders.equities as eq  # type: ignore
+            import schwab.orders.options as op  # type: ignore
+            from schwab.orders.common import Duration, Session, first_triggers_second  # type: ignore
+        except ImportError as e:
+            logger.error("schwab.orders not available: %s", e)
+            return {"status": "error", "error": "schwab.orders not available"}
+
+        try:
+            child_duration = Duration[duration_child.upper()]
+        except KeyError:
+            return {
+                "status": "error",
+                "error": f"Unknown duration_child: {duration_child} (valid: {[d.name for d in Duration]})",
+            }
+
+        # Resolve the equity leg limit — reuse the buffered-BUY path that
+        # place_order uses so behavior stays consistent.
+        if stock_limit is None:
+            quote = (self.get_quotes([stock_symbol]) or {}).get(stock_symbol)
+            if quote is None:
+                return {"status": "error", "error": f"No quote for {stock_symbol} — cannot compute stock_limit"}
+            stock_limit = _compute_limit_price(
+                "BUY", quote, self.config.LIMIT_PRICE_BUFFER_BPS
+            )
+            if stock_limit is None:
+                return {
+                    "status": "error",
+                    "error": f"No usable bid/ask/last for {stock_symbol} — cannot compute stock_limit",
+                }
+
+        shares = contracts * 100
+        stock_price_str = f"{float(stock_limit):.2f}"
+        call_price_str = f"{float(call_limit):.2f}"
+
+        self._throttle(_account_limiter)
+        try:
+            parent = (
+                eq.equity_buy_limit(stock_symbol, shares, stock_price_str)
+                .set_duration(Duration.DAY)
+                .set_session(Session.NORMAL)
+            )
+            child = (
+                op.option_sell_to_open_limit(option_osi, contracts, call_price_str)
+                .set_duration(child_duration)
+                .set_session(Session.NORMAL)
+            )
+            order = first_triggers_second(parent, child).build()
+
+            resp = client.place_order(account_hash, order)
+            resp.raise_for_status()
+
+            parent_order_id = resp.headers.get("Location", "").rstrip("/").split("/")[-1]
+            logger.info(
+                "Buy-write placed: BUY %d %s @ $%s → STO %d %s @ $%s (%s) parent_id=%s",
+                shares, stock_symbol, stock_price_str,
+                contracts, option_osi, call_price_str, duration_child.upper(),
+                parent_order_id,
+            )
+            return {
+                "status": "ok",
+                "parent_order_id": parent_order_id,
+                "child_order_id": None,  # surfaced by order_tracker after parent fills
+                "stock_symbol": stock_symbol,
+                "option_symbol": option_osi,
+                "contracts": contracts,
+                "shares": shares,
+                "stock_limit": float(stock_price_str),
+                "call_limit": float(call_price_str),
+                "duration_child": duration_child.upper(),
+            }
+        except Exception as e:
+            logger.error(
+                "place_buy_write(%s %d / %s %d @ $%s) failed: %s",
+                stock_symbol, shares, option_osi, contracts, call_price_str, e,
+            )
+            return {"status": "error", "error": str(e)}
+
+    # ── Multi-leg: verticals (all 4 directions × open/close) ────────────────
+
+    def place_vertical(
+        self,
+        account_hash: str,
+        spread_type: str,
+        action: str,
+        long_osi: str,
+        short_osi: str,
+        quantity: int,
+        net_price: float,
+        duration: str = "DAY",
+        session: str = "NORMAL",
+    ) -> dict:
+        """Place a 2-leg vertical spread via schwab-py's native VERTICAL builders.
+
+        Dispatches over the 8 builders (bull_call / bear_call / bull_put /
+        bear_put) × (open / close). The caller always passes
+        `(long_osi, short_osi)`; this method swaps leg ordering internally
+        when the underlying schwab-py builder expects `(short, long)` (bear
+        variants). OrderType (NET_DEBIT vs NET_CREDIT) and
+        ComplexOrderStrategyType.VERTICAL are set by the builder.
+
+        Args:
+            account_hash: Schwab account hash.
+            spread_type: "bull_call", "bear_call", "bull_put", or "bear_put".
+            action: "open" (BTO/STO) or "close" (STC/BTC).
+            long_osi: OSI symbol for the long leg.
+            short_osi: OSI symbol for the short leg.
+            quantity: Number of spreads (contracts per leg).
+            net_price: Net debit/credit per spread. Builder + spread_type
+                determines which — caller passes the absolute value either way.
+            duration: "DAY" or "GOOD_TILL_CANCEL".
+            session: "NORMAL" or "SEAMLESS".
+
+        Returns:
+            On success: {status, order_id, spread_type, action, long_osi,
+              short_osi, quantity, net_price, net_kind, duration, session}
+              where net_kind is "NET_DEBIT" or "NET_CREDIT" per Schwab's
+              chosen order type.
+            On failure: {status: "error", error}.
+        """
+        client = self._require_client()
+
+        if not account_hash:
+            return {"status": "error", "error": "empty account_hash"}
+        if not long_osi:
+            return {"status": "error", "error": "empty long_osi"}
+        if not short_osi:
+            return {"status": "error", "error": "empty short_osi"}
+        if quantity <= 0:
+            return {"status": "error", "error": f"quantity must be > 0: {quantity}"}
+        if net_price is None or float(net_price) <= 0:
+            return {"status": "error", "error": f"net_price must be > 0: {net_price}"}
+
+        spread_type = spread_type.lower()
+        action = action.lower()
+        valid_types = ("bull_call", "bear_call", "bull_put", "bear_put")
+        valid_actions = ("open", "close")
+        if spread_type not in valid_types:
+            return {
+                "status": "error",
+                "error": f"Unknown spread_type: {spread_type} (valid: {valid_types})",
+            }
+        if action not in valid_actions:
+            return {
+                "status": "error",
+                "error": f"Unknown action: {action} (valid: {valid_actions})",
+            }
+
+        try:
+            import schwab.orders.options as op  # type: ignore
+            from schwab.orders.common import Duration, Session  # type: ignore
+        except ImportError as e:
+            logger.error("schwab.orders not available: %s", e)
+            return {"status": "error", "error": "schwab.orders not available"}
+
+        try:
+            duration_enum = Duration[duration.upper()]
+        except KeyError:
+            return {
+                "status": "error",
+                "error": f"Unknown duration: {duration} (valid: {[d.name for d in Duration]})",
+            }
+        try:
+            session_enum = Session[session.upper()]
+        except KeyError:
+            return {
+                "status": "error",
+                "error": f"Unknown session: {session} (valid: {[s.name for s in Session]})",
+            }
+
+        # bull_* builders expect (long, short, qty, price); bear_* expect
+        # (short, long, qty, price). The `swap` flag indicates bear ordering.
+        builders = {
+            ("bull_call", "open"):  (op.bull_call_vertical_open,  False),
+            ("bull_call", "close"): (op.bull_call_vertical_close, False),
+            ("bear_call", "open"):  (op.bear_call_vertical_open,  True),
+            ("bear_call", "close"): (op.bear_call_vertical_close, True),
+            ("bull_put",  "open"):  (op.bull_put_vertical_open,   False),
+            ("bull_put",  "close"): (op.bull_put_vertical_close,  False),
+            ("bear_put",  "open"):  (op.bear_put_vertical_open,   True),
+            ("bear_put",  "close"): (op.bear_put_vertical_close,  True),
+        }
+        builder_fn, swap = builders[(spread_type, action)]
+        first, second = (short_osi, long_osi) if swap else (long_osi, short_osi)
+        price_str = f"{float(net_price):.2f}"
+
+        self._throttle(_account_limiter)
+        try:
+            order = (
+                builder_fn(first, second, quantity, price_str)
+                .set_duration(duration_enum)
+                .set_session(session_enum)
+                .build()
+            )
+            resp = client.place_order(account_hash, order)
+            resp.raise_for_status()
+            order_id = resp.headers.get("Location", "").rstrip("/").split("/")[-1]
+            net_kind = order.get("orderType", "")
+
+            logger.info(
+                "Vertical placed: %s %s %d x (long=%s, short=%s) @ %s $%s %s/%s (id=%s)",
+                spread_type, action, quantity, long_osi, short_osi,
+                net_kind, price_str, duration.upper(), session.upper(), order_id,
+            )
+            return {
+                "status": "ok",
+                "order_id": order_id,
+                "spread_type": spread_type,
+                "action": action,
+                "long_osi": long_osi,
+                "short_osi": short_osi,
+                "quantity": quantity,
+                "net_price": float(price_str),
+                "net_kind": net_kind,
+                "duration": duration.upper(),
+                "session": session.upper(),
+            }
+        except Exception as e:
+            logger.error(
+                "place_vertical(%s %s %d x %s/%s @ $%s) failed: %s",
+                spread_type, action, quantity, long_osi, short_osi, price_str, e,
+            )
+            return {"status": "error", "error": str(e)}
+
+    # ── Multi-leg: iron condor (4-leg, open/close) ──────────────────────────
+
+    def place_iron_condor(
+        self,
+        account_hash: str,
+        action: str,
+        long_put_osi: str,
+        short_put_osi: str,
+        short_call_osi: str,
+        long_call_osi: str,
+        quantity: int,
+        net_price: float,
+        duration: str = "DAY",
+        session: str = "NORMAL",
+    ) -> dict:
+        """Place a 4-leg iron condor via a hand-built OrderBuilder.
+
+        schwab-py ships no iron-condor constructor, so we assemble the
+        OrderBuilder directly with ComplexOrderStrategyType.IRON_CONDOR.
+
+        Leg mechanics:
+            open (net credit):  BTO long_put, STO short_put,
+                                STO short_call, BTO long_call
+            close (net debit):  STC long_put, BTC short_put,
+                                BTC short_call, STC long_call
+
+        All four legs share `quantity`. Strike ordering must be
+        long_put < short_put < short_call < long_call (the caller is
+        responsible — not validated here).
+
+        Args:
+            account_hash: Schwab account hash.
+            action: "open" or "close".
+            long_put_osi: Farthest OTM put (wing).
+            short_put_osi: Closer OTM put (body).
+            short_call_osi: Closer OTM call (body).
+            long_call_osi: Farthest OTM call (wing).
+            quantity: Number of condors.
+            net_price: Net credit (open) or debit (close), positive value.
+            duration: "DAY" or "GOOD_TILL_CANCEL".
+            session: "NORMAL" or "SEAMLESS".
+
+        Returns:
+            On success: {status, order_id, action, long_put_osi,
+              short_put_osi, short_call_osi, long_call_osi, quantity,
+              net_price, net_kind, duration, session}.
+            On failure: {status: "error", error}.
+        """
+        client = self._require_client()
+
+        if not account_hash:
+            return {"status": "error", "error": "empty account_hash"}
+        for name, val in (
+            ("long_put_osi", long_put_osi),
+            ("short_put_osi", short_put_osi),
+            ("short_call_osi", short_call_osi),
+            ("long_call_osi", long_call_osi),
+        ):
+            if not val:
+                return {"status": "error", "error": f"empty {name}"}
+        if quantity <= 0:
+            return {"status": "error", "error": f"quantity must be > 0: {quantity}"}
+        if net_price is None or float(net_price) <= 0:
+            return {"status": "error", "error": f"net_price must be > 0: {net_price}"}
+
+        action = action.lower()
+        if action not in ("open", "close"):
+            return {
+                "status": "error",
+                "error": f"Unknown action: {action} (valid: ('open', 'close'))",
+            }
+
+        try:
+            from schwab.orders.generic import OrderBuilder  # type: ignore
+            from schwab.orders.common import (  # type: ignore
+                ComplexOrderStrategyType,
+                Duration,
+                OptionInstruction,
+                OrderStrategyType,
+                OrderType,
+                Session,
+            )
+        except ImportError as e:
+            logger.error("schwab.orders not available: %s", e)
+            return {"status": "error", "error": "schwab.orders not available"}
+
+        try:
+            duration_enum = Duration[duration.upper()]
+        except KeyError:
+            return {
+                "status": "error",
+                "error": f"Unknown duration: {duration} (valid: {[d.name for d in Duration]})",
+            }
+        try:
+            session_enum = Session[session.upper()]
+        except KeyError:
+            return {
+                "status": "error",
+                "error": f"Unknown session: {session} (valid: {[s.name for s in Session]})",
+            }
+
+        if action == "open":
+            order_type = OrderType.NET_CREDIT
+            legs = [
+                (OptionInstruction.BUY_TO_OPEN,  long_put_osi),
+                (OptionInstruction.SELL_TO_OPEN, short_put_osi),
+                (OptionInstruction.SELL_TO_OPEN, short_call_osi),
+                (OptionInstruction.BUY_TO_OPEN,  long_call_osi),
+            ]
+        else:
+            order_type = OrderType.NET_DEBIT
+            legs = [
+                (OptionInstruction.SELL_TO_CLOSE, long_put_osi),
+                (OptionInstruction.BUY_TO_CLOSE,  short_put_osi),
+                (OptionInstruction.BUY_TO_CLOSE,  short_call_osi),
+                (OptionInstruction.SELL_TO_CLOSE, long_call_osi),
+            ]
+
+        price_str = f"{float(net_price):.2f}"
+
+        self._throttle(_account_limiter)
+        try:
+            builder = (
+                OrderBuilder()
+                .set_order_type(order_type)
+                .set_complex_order_strategy_type(ComplexOrderStrategyType.IRON_CONDOR)
+                .set_order_strategy_type(OrderStrategyType.SINGLE)
+                .set_duration(duration_enum)
+                .set_session(session_enum)
+                .set_price(price_str)
+                .set_quantity(quantity)
+            )
+            for instruction, osi in legs:
+                builder.add_option_leg(instruction, osi, quantity)
+            order = builder.build()
+
+            resp = client.place_order(account_hash, order)
+            resp.raise_for_status()
+            order_id = resp.headers.get("Location", "").rstrip("/").split("/")[-1]
+
+            logger.info(
+                "Iron condor placed: %s %d x (LP=%s, SP=%s, SC=%s, LC=%s) "
+                "@ %s $%s %s/%s (id=%s)",
+                action, quantity, long_put_osi, short_put_osi,
+                short_call_osi, long_call_osi,
+                order_type.value, price_str, duration.upper(), session.upper(),
+                order_id,
+            )
+            return {
+                "status": "ok",
+                "order_id": order_id,
+                "action": action,
+                "long_put_osi": long_put_osi,
+                "short_put_osi": short_put_osi,
+                "short_call_osi": short_call_osi,
+                "long_call_osi": long_call_osi,
+                "quantity": quantity,
+                "net_price": float(price_str),
+                "net_kind": order_type.value,
+                "duration": duration.upper(),
+                "session": session.upper(),
+            }
+        except Exception as e:
+            logger.error(
+                "place_iron_condor(%s %d x LP=%s/SP=%s/SC=%s/LC=%s @ $%s) failed: %s",
+                action, quantity, long_put_osi, short_put_osi,
+                short_call_osi, long_call_osi, price_str, e,
+            )
+            return {"status": "error", "error": str(e)}
+
+    # ── Mutual funds ──────────────────────────────────────────────────────────
+
+    def place_mutual_fund_order(
+        self,
+        account_hash: str,
+        symbol: str,
+        instruction: str,
+        dollar_amount: float,
+    ) -> dict:
+        """Place a mutual fund market order.
+
+        schwab-py has no mutual fund builder — we hand-roll the Schwab REST
+        payload. For stable-NAV money funds (SWVXX, SNSXX, etc.) the
+        "quantity" field is the dollar amount, which equals the share count
+        because NAV is $1.00.
+
+        Args:
+            account_hash: Schwab account hash.
+            symbol: Mutual fund ticker (e.g. "SWVXX").
+            instruction: "BUY" or "SELL".
+            dollar_amount: Dollars to buy/sell. Must be > 0.
+
+        Returns:
+            {status: "ok"|"error", order_id, symbol, instruction, dollar_amount}.
+        """
+        client = self._require_client()
+        if not account_hash:
+            return {"status": "error", "error": "empty account_hash"}
+        inst = instruction.upper()
+        if inst not in ("BUY", "SELL"):
+            return {"status": "error", "error": f"Unknown instruction: {instruction}"}
+        if dollar_amount <= 0:
+            return {"status": "error", "error": f"dollar_amount must be > 0: {dollar_amount}"}
+
+        # Schwab expects whole-dollar quantity for money market funds.
+        quantity = round(float(dollar_amount), 2)
+        order_spec = {
+            "orderType": "MARKET",
+            "session": "NORMAL",
+            "duration": "DAY",
+            "orderStrategyType": "SINGLE",
+            "orderLegCollection": [
+                {
+                    "instruction": inst,
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": symbol.upper(),
+                        "assetType": "MUTUAL_FUND",
+                    },
+                }
+            ],
+        }
+
+        self._throttle(_account_limiter)
+        try:
+            resp = client.place_order(account_hash, order_spec)
+            resp.raise_for_status()
+            order_id = resp.headers.get("Location", "").rstrip("/").split("/")[-1]
+            logger.info(
+                "Mutual fund order placed: %s $%.2f %s (id=%s)",
+                inst, quantity, symbol.upper(), order_id,
+            )
+            return {
+                "status": "ok",
+                "order_id": order_id,
+                "symbol": symbol.upper(),
+                "instruction": inst,
+                "dollar_amount": quantity,
+                "asset_type": "MUTUAL_FUND",
+            }
+        except Exception as e:
+            logger.error(
+                "place_mutual_fund_order(%s $%.2f %s) failed: %s",
+                inst, quantity, symbol.upper(), e,
+            )
+            return {"status": "error", "error": str(e)}
+
+    # ── Options ───────────────────────────────────────────────────────────────
+
+    def get_option_chain(
+        self,
+        symbol: str,
+        side: str,
+        dte_min: int,
+        dte_max: int,
+        strike_count: int = 20,
+    ) -> list[OptionContract]:
+        """Fetch an option chain slice.
+
+        Args:
+            symbol: Underlying ticker (e.g. "SPY").
+            side: "PUT" or "CALL".
+            dte_min / dte_max: Expiration window in days from today.
+            strike_count: Number of strikes around the money to return.
+
+        Returns:
+            Flat list of OptionContract rows sorted by (expiration, strike).
+            Empty list on any error or if the chain returns no data.
+        """
+        client = self._require_market_client()
+        try:
+            from schwab.client import Client as _Cli  # type: ignore
+            ct_enum = (
+                _Cli.Options.ContractType.PUT
+                if side.upper() == "PUT"
+                else _Cli.Options.ContractType.CALL
+            )
+        except ImportError:
+            logger.error("schwab-py not available for option chain")
+            return []
+
+        from_date = datetime.now(timezone.utc).date() + timedelta(days=dte_min)
+        to_date = datetime.now(timezone.utc).date() + timedelta(days=dte_max)
+
+        self._throttle(_market_limiter)
+        try:
+            resp = client.get_option_chain(
+                symbol,
+                contract_type=ct_enum,
+                strike_count=strike_count,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            resp.raise_for_status()
+            data = resp.json() or {}
+        except Exception as e:
+            logger.error("get_option_chain(%s %s) failed: %s", symbol, side, e)
+            return []
+
+        map_key = "putExpDateMap" if side.upper() == "PUT" else "callExpDateMap"
+        exp_map = data.get(map_key) or {}
+        contracts: list[OptionContract] = []
+        for exp_key, strikes in exp_map.items():
+            # exp_key looks like "2026-05-15:31" (YYYY-MM-DD:DTE)
+            exp_date = exp_key.split(":", 1)[0]
+            for _strike, rows in strikes.items():
+                if not rows:
+                    continue
+                row = rows[0]
+                try:
+                    contracts.append(OptionContract(
+                        symbol=row.get("symbol", ""),
+                        underlying=symbol.upper(),
+                        side=side.upper(),
+                        strike=float(row.get("strikePrice", 0)),
+                        expiration=exp_date,
+                        dte=int(row.get("daysToExpiration", 0)),
+                        bid=float(row.get("bid", 0) or 0),
+                        ask=float(row.get("ask", 0) or 0),
+                        mark=float(row.get("mark", 0) or 0),
+                        delta=float(row.get("delta", 0) or 0),
+                        gamma=float(row.get("gamma", 0) or 0),
+                        iv=float(row.get("volatility", 0) or 0),
+                        open_interest=int(row.get("openInterest", 0) or 0),
+                        volume=int(row.get("totalVolume", 0) or 0),
+                    ))
+                except (TypeError, ValueError):
+                    continue
+        contracts.sort(key=lambda c: (c.expiration, c.strike))
+        return contracts
+
+    def get_option_chain_all(
+        self,
+        symbol: str,
+        dte_min: int,
+        dte_max: int,
+        strike_count: int = 20,
+    ) -> list[OptionContract]:
+        """Fetch calls AND puts in a single API call.
+
+        Same as get_option_chain but omits the contract_type filter so
+        Schwab returns both sides. Costs 1 API call instead of 2.
+        """
+        client = self._require_market_client()
+        from_date = datetime.now(timezone.utc).date() + timedelta(days=dte_min)
+        to_date = datetime.now(timezone.utc).date() + timedelta(days=dte_max)
+
+        self._throttle(_market_limiter)
+        try:
+            resp = client.get_option_chain(
+                symbol,
+                strike_count=strike_count,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            resp.raise_for_status()
+            data = resp.json() or {}
+        except Exception as e:
+            logger.error("get_option_chain_all(%s) failed: %s", symbol, e)
+            return []
+
+        contracts: list[OptionContract] = []
+        for side, map_key in (("CALL", "callExpDateMap"), ("PUT", "putExpDateMap")):
+            exp_map = data.get(map_key) or {}
+            for exp_key, strikes in exp_map.items():
+                exp_date = exp_key.split(":", 1)[0]
+                for _strike, rows in strikes.items():
+                    if not rows:
+                        continue
+                    row = rows[0]
+                    try:
+                        contracts.append(OptionContract(
+                            symbol=row.get("symbol", ""),
+                            underlying=symbol.upper(),
+                            side=side,
+                            strike=float(row.get("strikePrice", 0)),
+                            expiration=exp_date,
+                            dte=int(row.get("daysToExpiration", 0)),
+                            bid=float(row.get("bid", 0) or 0),
+                            ask=float(row.get("ask", 0) or 0),
+                            mark=float(row.get("mark", 0) or 0),
+                            delta=float(row.get("delta", 0) or 0),
+                            gamma=float(row.get("gamma", 0) or 0),
+                            iv=float(row.get("volatility", 0) or 0),
+                            open_interest=int(row.get("openInterest", 0) or 0),
+                            volume=int(row.get("totalVolume", 0) or 0),
+                        ))
+                    except (TypeError, ValueError):
+                        continue
+        contracts.sort(key=lambda c: (c.expiration, c.strike))
+        return contracts
+
+    def get_atm_straddles(
+        self,
+        symbol: str,
+        dte_min: int,
+        dte_max: int,
+    ) -> list[Straddle]:
+        """Return one ATM straddle per expiry in the DTE window.
+
+        Fetches a single chain (both puts and calls) for the window and,
+        for each expiration, pairs the call and put at the strike nearest
+        the underlying price into a Straddle row.
+        """
+        client = self._require_market_client()
+        from_date = datetime.now(timezone.utc).date() + timedelta(days=dte_min)
+        to_date = datetime.now(timezone.utc).date() + timedelta(days=dte_max)
+
+        self._throttle(_market_limiter)
+        try:
+            resp = client.get_option_chain(
+                symbol,
+                strike_count=10,  # ~5 strikes each side of ATM is plenty
+                from_date=from_date,
+                to_date=to_date,
+            )
+            resp.raise_for_status()
+            data = resp.json() or {}
+        except Exception as e:
+            logger.error("get_atm_straddles(%s) failed: %s", symbol, e)
+            return []
+
+        underlying_price = float(data.get("underlyingPrice") or 0)
+        if underlying_price <= 0:
+            return []
+
+        put_map = data.get("putExpDateMap") or {}
+        call_map = data.get("callExpDateMap") or {}
+
+        def _build_contract(row: dict, side: str, exp: str) -> OptionContract | None:
+            try:
+                return OptionContract(
+                    symbol=row.get("symbol", ""),
+                    underlying=symbol.upper(),
+                    side=side,
+                    strike=float(row.get("strikePrice", 0)),
+                    expiration=exp,
+                    dte=int(row.get("daysToExpiration", 0)),
+                    bid=float(row.get("bid", 0) or 0),
+                    ask=float(row.get("ask", 0) or 0),
+                    mark=float(row.get("mark", 0) or 0),
+                    delta=float(row.get("delta", 0) or 0),
+                    gamma=float(row.get("gamma", 0) or 0),
+                    iv=float(row.get("volatility", 0) or 0),
+                    open_interest=int(row.get("openInterest", 0) or 0),
+                    volume=int(row.get("totalVolume", 0) or 0),
+                )
+            except (TypeError, ValueError):
+                return None
+
+        straddles: list[Straddle] = []
+        for exp_key, put_strikes in put_map.items():
+            call_strikes = call_map.get(exp_key) or {}
+            if not call_strikes:
+                continue
+            exp_date = exp_key.split(":", 1)[0]
+            # Shared strikes between both sides
+            common = set(put_strikes.keys()) & set(call_strikes.keys())
+            if not common:
+                continue
+            # Pick the strike closest to the underlying price
+            best = min(common, key=lambda s: abs(float(s) - underlying_price))
+            put_row = (put_strikes[best] or [None])[0]
+            call_row = (call_strikes[best] or [None])[0]
+            if put_row is None or call_row is None:
+                continue
+            put_c = _build_contract(put_row, "PUT", exp_date)
+            call_c = _build_contract(call_row, "CALL", exp_date)
+            if put_c is None or call_c is None:
+                continue
+            straddles.append(Straddle(
+                underlying=symbol.upper(),
+                underlying_price=underlying_price,
+                strike=float(best),
+                expiration=exp_date,
+                dte=int(put_row.get("daysToExpiration", 0)),
+                call=call_c,
+                put=put_c,
+            ))
+
+        straddles.sort(key=lambda s: s.expiration)
+        return straddles
+
+    def place_option_order(
+        self,
+        account_hash: str,
+        osi_symbol: str,
+        instruction: str,
+        quantity: int,
+        limit_price: float,
+        duration: str | None = None,
+    ) -> dict:
+        """Place a single-leg option order.
+
+        Args:
+            account_hash: Schwab account hash.
+            osi_symbol: Full OSI symbol (e.g. "SPY   260515P00450000").
+            instruction: One of SELL_TO_OPEN, BUY_TO_CLOSE, BUY_TO_OPEN, SELL_TO_CLOSE.
+            quantity: Number of contracts.
+            limit_price: Limit credit/debit per contract (required — no market orders for v1).
+            duration: "DAY" or "GOOD_TILL_CANCEL"; None → config default.
+
+        Returns:
+            Dict shaped like place_order: {status: "ok"|"error", order_id, ...}.
+        """
+        client = self._require_client()
+        if not account_hash:
+            return {"status": "error", "error": "empty account_hash"}
+        if quantity <= 0:
+            return {"status": "error", "error": f"Invalid quantity: {quantity}"}
+        if limit_price is None or limit_price <= 0:
+            return {"status": "error", "error": f"limit_price required: got {limit_price}"}
+
+        try:
+            import schwab.orders.options as opt  # type: ignore
+            from schwab.orders.common import Duration  # type: ignore
+        except ImportError:
+            return {"status": "error", "error": "schwab.orders.options not available"}
+
+        builders = {
+            "SELL_TO_OPEN": opt.option_sell_to_open_limit,
+            "BUY_TO_CLOSE": opt.option_buy_to_close_limit,
+            "BUY_TO_OPEN": opt.option_buy_to_open_limit,
+            "SELL_TO_CLOSE": opt.option_sell_to_close_limit,
+        }
+        inst = instruction.upper()
+        builder_fn = builders.get(inst)
+        if builder_fn is None:
+            return {"status": "error", "error": f"Unknown instruction: {instruction}"}
+
+        resolved_duration = (duration or self.config.ORDER_DURATION or "DAY").upper()
+        try:
+            duration_enum = Duration[resolved_duration]
+        except KeyError:
+            return {"status": "error", "error": f"Unknown duration: {resolved_duration}"}
+
+        price_str = f"{float(limit_price):.2f}"
+
+        self._throttle(_account_limiter)
+        try:
+            order = (
+                builder_fn(osi_symbol, quantity, price_str)
+                .set_duration(duration_enum)
+                .build()
+            )
+            resp = client.place_order(account_hash, order)
+            resp.raise_for_status()
+            order_id = resp.headers.get("Location", "").rstrip("/").split("/")[-1]
+            logger.info(
+                "Option order placed: %s %d %s @ $%s (id=%s)",
+                inst, quantity, osi_symbol, price_str, order_id,
+            )
+            return {
+                "status": "ok",
+                "order_id": order_id,
+                "osi_symbol": osi_symbol,
+                "instruction": inst,
+                "quantity": quantity,
+                "limit_price": float(price_str),
+                "duration": resolved_duration,
+            }
+        except Exception as e:
+            logger.error(
+                "place_option_order(%s %d %s @ $%s) failed: %s",
+                inst, quantity, osi_symbol, price_str, e,
             )
             return {"status": "error", "error": str(e)}
 

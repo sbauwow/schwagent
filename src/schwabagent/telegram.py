@@ -23,6 +23,65 @@ _pending_approvals: dict[str, asyncio.Future] = {}
 _bot_loop: asyncio.AbstractEventLoop | None = None
 
 
+def _render_approval_text(trade: dict, timeout: int) -> str:
+    """Render the approval message body for a trade dict.
+
+    Dispatch on `trade["trade_type"]`:
+      - "buy_write" → covered-call two-leg proposal (BUY stock + STO call)
+      - default      → single-leg equity order (BUY/SELL SYM qty @ price)
+
+    Free function so it can be unit-tested without a running event loop.
+    """
+    strategy = trade.get("strategy", "?")
+    trade_type = (trade.get("trade_type") or "").lower()
+
+    if trade_type == "buy_write":
+        symbol = trade.get("symbol", "?")
+        contracts = int(trade.get("contracts") or 1)
+        shares = contracts * 100
+        stock_price = float(trade.get("stock_limit") or trade.get("price") or 0.0)
+        strike = trade.get("strike", "?")
+        expiration = trade.get("expiration", "?")
+        call_limit = float(trade.get("call_limit") or trade.get("call_bid") or 0.0)
+        premium_total = call_limit * 100 * contracts
+        net_debit = stock_price * shares - premium_total
+        max_profit = (float(strike) - stock_price + call_limit) * 100 * contracts if isinstance(strike, (int, float)) else None
+        ann_if_called = float(trade.get("if_called_yield_pct") or 0.0)
+        div_in_hold = float(trade.get("dividend_capture") or 0.0) * 100 * contracts
+
+        lines = [
+            f"*Buy-Write proposal · {_escape_md(symbol)}*",
+            f"Strategy: `{_escape_md(strategy)}`",
+            f"  BUY {shares} {_escape_md(symbol)} @ LIMIT ${stock_price:,.2f}",
+            f"  STO  {contracts} {_escape_md(symbol)} {_escape_md(str(expiration))} ${strike} CALL @ LIMIT ${call_limit:,.2f}",
+            f"Net debit: ${net_debit:,.2f}",
+        ]
+        if max_profit is not None:
+            lines.append(f"Max profit \\(if called\\): ${max_profit:,.2f}")
+        if ann_if_called:
+            lines.append(f"Annualized if\\-called: {ann_if_called:.1f}%")
+        if div_in_hold:
+            lines.append(f"Div in hold: ${div_in_hold:,.2f}")
+        lines.append("")
+        lines.append(f"_Expires in {timeout}s_")
+        return "\n".join(lines)
+
+    # Single-leg default
+    side = trade.get("side", "?")
+    symbol = trade.get("symbol", "?")
+    qty = int(trade.get("quantity") or 0)
+    price = float(trade.get("price") or 0.0)
+    value = qty * price
+    return (
+        f"*Trade Approval Required*\n\n"
+        f"*{_escape_md(side)} {_escape_md(symbol)}*\n"
+        f"Strategy: `{_escape_md(strategy)}`\n"
+        f"Qty: {qty} @ ${price:,.2f}\n"
+        f"Value: ${value:,.2f}\n\n"
+        f"_Expires in {timeout}s_"
+    )
+
+
 def _escape_md(text: str) -> str:
     """Escape MarkdownV2 special characters, preserving *bold* and `code`."""
     # Protect bold markers and code blocks
@@ -326,6 +385,40 @@ class TelegramBot:
         """Alert on agent errors."""
         self.send_alert(f"*Agent Error*\n\n`{_escape_md(error[:500])}`")
 
+    def send_quant_papers(self, papers: list) -> None:
+        """Send a digest of top-scoring quant research papers.
+
+        Each paper is a PaperRow (or any object with title, url, source,
+        authors, published, relevance_score, relevance_tags, summary).
+        """
+        if not papers:
+            return
+
+        lines = [f"*Quant Research — {len(papers)} new*\n"]
+        for p in papers:
+            src = _escape_md(getattr(p, "source", "?"))
+            title = _escape_md((getattr(p, "title", "") or "")[:140])
+            url = getattr(p, "url", "") or ""
+            score = float(getattr(p, "relevance_score", 0.0) or 0.0)
+            tags = _escape_md((getattr(p, "relevance_tags", "") or "")[:80])
+            authors = _escape_md((getattr(p, "authors", "") or "")[:80])
+            published = _escape_md((getattr(p, "published", "") or "")[:10])
+            summary = (getattr(p, "summary", "") or "").strip()
+
+            lines.append(f"*\\[{src}\\]* [{title}]({_escape_md(url)})")
+            meta = f"score={score:.1f}"
+            if authors:
+                meta += f" · {authors}"
+            if published:
+                meta += f" · {published}"
+            lines.append(f"`{meta}`")
+            if tags:
+                lines.append(f"_{tags}_")
+            if summary:
+                lines.append(_escape_md(summary[:400]))
+            lines.append("")
+        self.send_alert("\n".join(lines).rstrip())
+
     # ── Public API: trade approval ───────────────────────────────────────
 
     def request_approval(self, trade_id: str, trade: dict, timeout: int | None = None) -> bool:
@@ -355,24 +448,11 @@ class TelegramBot:
         future = self._loop.create_future()
         _pending_approvals[trade_id] = future
 
-        side = trade.get("side", "?")
-        symbol = trade.get("symbol", "?")
-        qty = trade.get("quantity", 0)
-        price = trade.get("price", 0)
-        value = qty * price
-        strategy = trade.get("strategy", "?")
+        text = _render_approval_text(trade, timeout)
 
         async def _send_approval():
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-            text = (
-                f"*Trade Approval Required*\n\n"
-                f"*{_escape_md(side)} {_escape_md(symbol)}*\n"
-                f"Strategy: `{_escape_md(strategy)}`\n"
-                f"Qty: {qty} @ ${price:,.2f}\n"
-                f"Value: ${value:,.2f}\n\n"
-                f"_Expires in {timeout}s_"
-            )
 
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("Approve", callback_data=f"approve:{trade_id}"),

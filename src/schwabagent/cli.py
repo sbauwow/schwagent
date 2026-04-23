@@ -27,6 +27,10 @@ def main() -> None:
     parser.add_argument("--status", action="store_true", help="Show agent status and exit")
     parser.add_argument("--web", action="store_true", help="Start the web dashboard")
     parser.add_argument("--port", type=int, default=8898, help="Web dashboard port (default: 8898)")
+    parser.add_argument("--autoresearch", action="store_true",
+                        help="Run the auto-research pipeline (backtest + validation + LLM critique)")
+    parser.add_argument("--autoresearch-force-fetch", action="store_true",
+                        help="Force historical data re-fetch even if the CSV is fresh")
 
     args = parser.parse_args()
 
@@ -63,6 +67,12 @@ def main() -> None:
     if args.web:
         from schwabagent.web.app import run_server
         run_server(config, port=args.port)
+        return
+
+    # ── Auto-research pipeline ────────────────────────────────────────────
+
+    if args.autoresearch:
+        _cmd_autoresearch(config, console, force_fetch=args.autoresearch_force_fetch)
         return
 
     # ── Status ─────────────────────────────────────────────────────────────
@@ -234,6 +244,149 @@ def _cmd_pnl(config: Config, console: Console) -> None:
         console.print("\n  No trade history yet.")
 
     console.print()
+
+
+def _cmd_autoresearch(config: Config, console: Console, force_fetch: bool = False) -> None:
+    """Run the auto-research pipeline across every configured strategy."""
+    from schwabagent.autoresearch import AutoResearchPipeline, BACKTESTABLE_STRATEGIES
+    from schwabagent.llm import LLMClient
+    from schwabagent.schwab_client import SchwabClient
+
+    console.print()
+    console.rule("[cyan]Schwab Agent Auto-Research[/cyan]")
+    console.print()
+
+    # Schwab client: needed for data fetch. If auth fails the pipeline still
+    # runs against any existing cached CSV.
+    client: SchwabClient | None = None
+    try:
+        c = SchwabClient(config)
+        if c.authenticate():
+            client = c
+            console.print("  [green]✓[/green] Schwab API connected")
+        else:
+            console.print("  [yellow]![/yellow] Schwab API not reachable — using cached CSV if present")
+    except Exception as e:
+        console.print(f"  [yellow]![/yellow] Schwab init error: {e}")
+
+    # LLM client: optional. Pipeline renders reports without critique if absent.
+    llm: LLMClient | None = None
+    if config.AUTORESEARCH_LLM_ENABLED:
+        try:
+            llm = LLMClient(
+                provider=config.LLM_PROVIDER,
+                model=config.LLM_MODEL or config.OLLAMA_MODEL,
+                api_key=config.LLM_API_KEY or config.ANTHROPIC_API_KEY or config.OPENAI_API_KEY,
+                base_url=config.LLM_BASE_URL or config.OLLAMA_HOST,
+                timeout=config.LLM_TIMEOUT or config.OLLAMA_TIMEOUT,
+                temperature=config.LLM_TEMPERATURE,
+                max_tokens=config.LLM_MAX_TOKENS,
+            )
+            if llm.is_available():
+                console.print(f"  [green]✓[/green] LLM provider ready ({llm.provider})")
+            else:
+                console.print(f"  [yellow]![/yellow] LLM provider {llm.provider} not available — reports will skip critique")
+                llm = None
+        except Exception as e:
+            console.print(f"  [yellow]![/yellow] LLM init error: {e}")
+            llm = None
+
+    pipeline = AutoResearchPipeline(config=config, client=client, llm=llm)
+    console.print(
+        f"  Eval window: {pipeline.years}y   "
+        f"Data: {pipeline.data_path}   "
+        f"Reports: {pipeline.report_dir}"
+    )
+    console.print()
+
+    try:
+        reports = pipeline.run(fetch_force=force_fetch)
+    except Exception as e:
+        console.print(f"  [red]✗[/red] Pipeline failed: {e}")
+        sys.exit(1)
+
+    # Summary table
+    table = Table(title="Auto-research results", show_lines=False)
+    table.add_column("Strategy", style="cyan")
+    table.add_column("Sharpe", justify="right")
+    table.add_column("CAGR", justify="right")
+    table.add_column("Max DD", justify="right")
+    table.add_column("Alpha vs SPY", justify="right")
+    table.add_column("Drift", justify="right")
+    table.add_column("Status")
+
+    backtestable_sorted = sorted(
+        (r for r in reports if r.backtestable and r.sharpe is not None),
+        key=lambda r: -r.sharpe,
+    )
+    others = [r for r in reports if not (r.backtestable and r.sharpe is not None)]
+
+    def fmt_pct(v):
+        return f"{v:+.2f}%" if v is not None else "—"
+
+    for r in backtestable_sorted:
+        drift = (
+            f"{r.sharpe_drift_pct:+.1f}%"
+            if r.sharpe_drift_pct is not None
+            else "—"
+        )
+        status = "ok" if not r.errors else f"[red]errors ({len(r.errors)})[/red]"
+        if r.drift_flag:
+            status = f"[red]drift {drift}[/red]"
+        table.add_row(
+            r.strategy,
+            f"{r.sharpe:.2f}",
+            fmt_pct(r.cagr),
+            fmt_pct(r.max_drawdown_pct),
+            fmt_pct(r.alpha_pct),
+            drift,
+            status,
+        )
+    for r in others:
+        if r.backtestable:
+            status = f"[red]error ({len(r.errors)})[/red]" if r.errors else "[yellow]no data[/yellow]"
+        else:
+            status = "[dim]unvalidated[/dim]"
+        table.add_row(r.strategy, "—", "—", "—", "—", "—", status)
+
+    console.print(table)
+    console.print()
+    console.print(f"  Reports written to: [cyan]{pipeline.report_dir}[/cyan]")
+    console.print(f"  Leaderboard: [cyan]{pipeline.report_dir / 'leaderboard.md'}[/cyan]")
+    console.print()
+
+    # Optional Telegram digest — uses a direct HTTPS POST so we don't need to
+    # spin up the asyncio-based TelegramBot just for a single message.
+    if config.AUTORESEARCH_TELEGRAM_DIGEST and config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
+        try:
+            _autoresearch_telegram_digest(config, reports)
+            console.print("  [green]✓[/green] Telegram digest sent")
+        except Exception as e:
+            console.print(f"  [yellow]![/yellow] Telegram digest failed: {e}")
+
+
+def _autoresearch_telegram_digest(config: Config, reports: list) -> None:
+    """POST a plain-text autoresearch summary to the configured chat."""
+    import requests
+
+    lines = ["Auto-research digest"]
+    backtestable = [r for r in reports if r.backtestable and r.sharpe is not None]
+    backtestable.sort(key=lambda r: -r.sharpe)
+    for r in backtestable:
+        flag = " ⚠️" if r.drift_flag else ""
+        alpha = f"{r.alpha_pct:+.1f}%" if r.alpha_pct is not None else "n/a"
+        lines.append(
+            f"{r.strategy}: Sharpe {r.sharpe:.2f} | CAGR {r.cagr:+.1f}% | α {alpha}{flag}"
+        )
+    unvalidated = [r for r in reports if not r.backtestable]
+    if unvalidated:
+        lines.append(f"Unvalidated: {', '.join(r.strategy for r in unvalidated)}")
+
+    text = "\n".join(lines)
+    chat_id = config.TELEGRAM_CHAT_ID.split(",")[0]
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+    resp = requests.post(url, json={"chat_id": int(chat_id), "text": text}, timeout=10)
+    resp.raise_for_status()
 
 
 def _print_opportunities(opps: list[dict], console: Console) -> None:

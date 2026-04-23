@@ -323,7 +323,7 @@ class TestFullDetection:
         result = self.model.detect(quotes, histories)
         # Should be bullish-leaning (Bull or Recovery)
         assert result.regime in (Regime.BULL, Regime.RECOVERY)
-        assert len(result.signals) == 7
+        assert len(result.signals) == 8
 
     def test_detect_disabled(self):
         """When REGIME_ENABLED=False, should return neutral Recovery."""

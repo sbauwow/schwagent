@@ -14,14 +14,25 @@ from schwabagent.config import Config
 from schwabagent.persistence import StateStore
 from schwabagent.risk import RiskManager
 from schwabagent.schwab_client import AccountSummary, SchwabClient
-from schwabagent.intermarket import RegimeModel, regime_sizing_factor
+from schwabagent.intermarket import (
+    RegimeModel, regime_sizing_factor,
+    get_yield_curve, TREASURY_SYMBOLS,
+    get_commodities, COMMODITY_SYMBOLS,
+)
 from schwabagent.strategies.base import Strategy
+from schwabagent.strategies.brown_momentum import BrownMomentumStrategy
 from schwabagent.strategies.composite import CompositeStrategy
 from schwabagent.strategies.etf_rotation import ETFRotationStrategy
 from schwabagent.strategies.mean_reversion import MeanReversionStrategy
 from schwabagent.strategies.conviction_hold import ConvictionHoldStrategy
 from schwabagent.strategies.etf_scalp import ETFScalpStrategy
 from schwabagent.strategies.momentum import MomentumStrategy
+from schwabagent.strategies.tick_breadth import TickBreadthStrategy
+from schwabagent.strategies.ah_sniper import AhSniperStrategy
+from schwabagent.strategies.gamma_scanner import GammaScannerStrategy
+from schwabagent.strategies.covered_call_screener import CoveredCallScreener
+from schwabagent.strategies.unusual_activity import UnusualActivityStrategy
+from schwabagent.strategies.theta import ThetaStrategy
 from schwabagent.strategies.trend_following import TrendFollowingStrategy
 
 logger = logging.getLogger(__name__)
@@ -257,6 +268,47 @@ class AgentRunner:
                 )
             return "\n".join(lines)
 
+        def _yields(args):
+            quotes = self.client.get_quotes(TREASURY_SYMBOLS)
+            curve = get_yield_curve(quotes)
+            if not curve:
+                return "Treasury yield data unavailable."
+            lines = ["<b>Treasury Yield Curve</b>", ""]
+            for sym, label in [("irx_13w", "13-Wk"), ("fvx_5y", "5-Yr"),
+                               ("tnx_10y", "10-Yr"), ("tyx_30y", "30-Yr")]:
+                val = curve.get(sym)
+                lines.append(f"  <code>{label:6s}</code>  {val:.3f}%" if val is not None else f"  <code>{label:6s}</code>  --")
+            lines.append("")
+            shape = curve.get("shape", "?")
+            s10y13w = curve.get("spread_10y_13w")
+            s30y10y = curve.get("spread_30y_10y")
+            if shape == "Inverted":
+                shape_str = f"⚠️ <b>{shape}</b>"
+            else:
+                shape_str = f"<b>{shape}</b>"
+            lines.append(f"Shape: {shape_str}")
+            if s10y13w is not None:
+                lines.append(f"10Y-13W spread: <b>{s10y13w:+.3f}%</b>")
+            if s30y10y is not None:
+                lines.append(f"30Y-10Y spread: <b>{s30y10y:+.3f}%</b>")
+            return "\n".join(lines)
+
+        def _commodities(args):
+            quotes = self.client.get_quotes(COMMODITY_SYMBOLS)
+            rows = get_commodities(quotes)
+            if not rows:
+                return "Commodity data unavailable."
+            lines = ["<b>Commodities</b> (sorted by |move|)", ""]
+            for r in rows:
+                chg = r["change_pct"]
+                arrow = "▲" if chg > 0 else "▼" if chg < 0 else "–"
+                sign = "+" if chg > 0 else ""
+                lines.append(
+                    f"  <code>{r['label']:14s}</code> "
+                    f"${r['last']:<9.2f} {arrow} {sign}{chg:.2f}%"
+                )
+            return "\n".join(lines)
+
         def _regime(args):
             if not self.config.REGIME_ENABLED:
                 return "Regime detection is disabled in config."
@@ -439,6 +491,1350 @@ class AgentRunner:
                 f"(flag only takes effect in <code>./run.sh live</code>)"
             )
 
+        def _sweep(args):
+            """Sweep idle cash into SWVXX (or configured money market fund).
+
+            Usage:
+              /sweep                   preview — show cash, buffer, proposed amount
+              /sweep confirm           place the BUY order
+              /sweep 5000              override amount (preview)
+              /sweep 5000 confirm      override amount, place order
+              /sweep sell 5000 confirm sell SWVXX to raise cash
+            """
+            cfg = self.config
+            symbol = cfg.SWEEP_SYMBOL
+            side = "BUY"
+            amount_override: float | None = None
+            confirm = False
+
+            for tok in args:
+                t = tok.lower()
+                if t == "confirm":
+                    confirm = True
+                elif t in ("buy", "sell"):
+                    side = t.upper()
+                else:
+                    try:
+                        amount_override = float(tok.replace(",", "").replace("$", ""))
+                    except ValueError:
+                        return f"Bad token: <code>{_e(tok)}</code>"
+
+            account = self._get_account()
+            cash = account.cash_available
+            buffer_ = cfg.SWEEP_CASH_BUFFER
+
+            # Compute amount to move
+            if side == "BUY":
+                if amount_override is not None:
+                    amount = amount_override
+                else:
+                    amount = max(0.0, cash - buffer_)
+            else:
+                if amount_override is None:
+                    return "Usage: <code>/sweep sell AMOUNT confirm</code>"
+                amount = amount_override
+
+            # Preview header
+            held_swvxx = next(
+                (p for p in account.positions if p.symbol == symbol and p.quantity > 0),
+                None,
+            )
+            held_str = f"${held_swvxx.market_value:,.2f}" if held_swvxx else "$0"
+
+            mode = "LIVE" if (confirm and not cfg.DRY_RUN) else (
+                "DRY" if confirm else "PREVIEW"
+            )
+            lines = [
+                f"<b>Sweep {side} {_e(symbol)}</b>  <i>{mode}</i>",
+                "",
+                f"Cash available: ${cash:,.2f}",
+                f"Buffer: ${buffer_:,.2f}",
+                f"Currently held: {held_str}",
+                f"Amount: ${amount:,.2f}",
+            ]
+
+            # Validation
+            if amount < cfg.SWEEP_MIN_AMOUNT:
+                lines.append(
+                    f"\nBelow minimum (${cfg.SWEEP_MIN_AMOUNT:,.2f}) — nothing to do."
+                )
+                return "\n".join(lines)
+            if side == "BUY" and amount > cash:
+                lines.append(f"\n<b>BLOCKED:</b> amount exceeds cash available.")
+                return "\n".join(lines)
+            if side == "SELL":
+                if not held_swvxx:
+                    lines.append(f"\n<b>BLOCKED:</b> no {_e(symbol)} position.")
+                    return "\n".join(lines)
+                if amount > held_swvxx.market_value:
+                    lines.append(
+                        f"\n<b>BLOCKED:</b> hold ${held_swvxx.market_value:,.2f}, "
+                        f"cannot sell ${amount:,.2f}."
+                    )
+                    return "\n".join(lines)
+
+            if not confirm:
+                lines.append(
+                    "\nAdd <code>confirm</code> to place.  "
+                    f"<i>NAV fills at 4pm ET.</i>"
+                )
+                return "\n".join(lines)
+
+            if cfg.DRY_RUN:
+                lines.append("\nDRY_RUN=true — not placed. Flip DRY_RUN=false for live.")
+                return "\n".join(lines)
+
+            result = self.client.place_mutual_fund_order(
+                account.account_hash, symbol, side, amount,
+            )
+            if result.get("status") != "ok":
+                lines.append(
+                    f"\n<b>ORDER FAILED:</b> <code>{_e(result.get('error', '?'))}</code>"
+                )
+                return "\n".join(lines)
+
+            # Record trade
+            self.risk.record_trade(symbol, side, int(amount), 1.00, strategy="sweep")
+            trade = {
+                "strategy": "sweep",
+                "symbol": symbol,
+                "side": side,
+                "quantity": amount,
+                "price": 1.00,
+                "value": amount,
+                "dry_run": False,
+                "asset_type": "MUTUAL_FUND",
+                **result,
+            }
+            self.state.append_trade(trade)
+            if self.telegram:
+                self.telegram.send_trade_alert(trade)
+            lines.append(
+                f"\n<b>PLACED</b> id=<code>{_e(result.get('order_id', '?'))}</code>\n"
+                f"<i>Fills at next 4pm ET NAV.</i>"
+            )
+            return "\n".join(lines)
+
+        def _sweepetf(args):
+            """Sweep idle cash into SGOV (short-Treasury ETF).
+
+            Usage:
+              /sweepetf                    preview at current ask
+              /sweepetf confirm            BUY (cash - buffer) / ask
+              /sweepetf 5000               override dollar amount (preview)
+              /sweepetf 5000 confirm       override + place
+              /sweepetf sell 50 confirm    sell 50 shares
+              /sweepetf sell all confirm   liquidate entire position
+            """
+            cfg = self.config
+            symbol = cfg.SWEEP_ETF_SYMBOL
+            side = "BUY"
+            amount_override: float | None = None
+            sell_qty_override: int | str | None = None
+            confirm = False
+
+            for tok in args:
+                t = tok.lower()
+                if t == "confirm":
+                    confirm = True
+                elif t == "buy":
+                    side = "BUY"
+                elif t == "sell":
+                    side = "SELL"
+                elif t == "all" and side == "SELL":
+                    sell_qty_override = "all"
+                elif side == "SELL" and t.isdigit():
+                    sell_qty_override = int(t)
+                else:
+                    try:
+                        amount_override = float(tok.replace(",", "").replace("$", ""))
+                    except ValueError:
+                        return f"Bad token: <code>{_e(tok)}</code>"
+
+            # Get a fresh ask to size shares
+            q = (self.client.get_quotes([symbol]) or {}).get(symbol)
+            if q is None or not (q.ask or q.last):
+                return f"No quote for <code>{_e(symbol)}</code>."
+            ask = float(q.ask or q.last)
+            bid = float(q.bid or q.last)
+
+            account = self._get_account()
+            cash = account.cash_available
+            buffer_ = cfg.SWEEP_CASH_BUFFER
+            held = next(
+                (p for p in account.positions if p.symbol == symbol and p.quantity > 0),
+                None,
+            )
+
+            # Resolve quantity
+            if side == "BUY":
+                if amount_override is not None:
+                    amount = amount_override
+                else:
+                    amount = max(0.0, cash - buffer_)
+                qty = int(amount // ask)
+                est_cost = qty * ask
+            else:  # SELL
+                if sell_qty_override == "all":
+                    if held is None:
+                        return f"No position in <code>{_e(symbol)}</code>."
+                    qty = int(held.quantity)
+                elif isinstance(sell_qty_override, int):
+                    qty = sell_qty_override
+                else:
+                    return "Usage: <code>/sweepetf sell QTY|all confirm</code>"
+                amount = qty * bid
+                est_cost = qty * bid
+
+            held_str = (
+                f"{held.quantity:.0f}sh @ ${held.avg_price:,.2f} "
+                f"(${held.market_value:,.2f})" if held else "none"
+            )
+            mode = "LIVE" if (confirm and not cfg.DRY_RUN) else (
+                "DRY" if confirm else "PREVIEW"
+            )
+            lines = [
+                f"<b>SweepETF {side} {_e(symbol)}</b>  <i>{mode}</i>",
+                "",
+                f"Cash: ${cash:,.2f}  buffer: ${buffer_:,.2f}",
+                f"Quote: bid ${bid:.4f} / ask ${ask:.4f}",
+                f"Held: {held_str}",
+                f"Qty: {qty}  est ${est_cost:,.2f}",
+            ]
+
+            if qty <= 0:
+                lines.append("\nNothing to do.")
+                return "\n".join(lines)
+            if side == "BUY" and est_cost < cfg.SWEEP_MIN_AMOUNT:
+                lines.append(
+                    f"\nBelow minimum (${cfg.SWEEP_MIN_AMOUNT:,.2f})."
+                )
+                return "\n".join(lines)
+            if side == "BUY" and est_cost > cash:
+                lines.append(f"\n<b>BLOCKED:</b> est cost exceeds cash.")
+                return "\n".join(lines)
+            if side == "SELL":
+                if held is None:
+                    lines.append(f"\n<b>BLOCKED:</b> no {_e(symbol)} position.")
+                    return "\n".join(lines)
+                if qty > held.quantity:
+                    lines.append(
+                        f"\n<b>BLOCKED:</b> hold {held.quantity:.0f}, "
+                        f"cannot sell {qty}."
+                    )
+                    return "\n".join(lines)
+
+            # Risk gate — only on BUY side
+            if side == "BUY":
+                allowed, reason = self.risk.can_buy(symbol, qty, ask, account)
+                if not allowed:
+                    lines.append(f"\n<b>BLOCKED:</b> <code>{_e(reason)}</code>")
+                    return "\n".join(lines)
+
+            if not confirm:
+                lines.append("\nAdd <code>confirm</code> to place.")
+                return "\n".join(lines)
+
+            if cfg.DRY_RUN:
+                lines.append("\nDRY_RUN=true — not placed.")
+                return "\n".join(lines)
+
+            price = ask if side == "BUY" else bid
+            result = self.client.place_order(
+                account.account_hash, symbol, side, qty,
+            )
+            if result.get("status") != "ok":
+                lines.append(
+                    f"\n<b>ORDER FAILED:</b> <code>{_e(result.get('error', '?'))}</code>"
+                )
+                return "\n".join(lines)
+
+            self.risk.record_trade(symbol, side, qty, price, strategy="sweepetf")
+            trade = {
+                "strategy": "sweepetf",
+                "symbol": symbol,
+                "side": side,
+                "quantity": qty,
+                "price": price,
+                "value": qty * price,
+                "dry_run": False,
+                **result,
+            }
+            self.state.append_trade(trade)
+            if self.telegram:
+                self.telegram.send_trade_alert(trade)
+            if result.get("order_id") and result["order_id"] != "dry":
+                try:
+                    self.order_tracker.track(
+                        order_id=result["order_id"],
+                        symbol=symbol, side=side, quantity=qty,
+                        expected_price=price,
+                        account_hash=account.account_hash,
+                        strategy="sweepetf",
+                    )
+                except Exception:
+                    logger.exception("order_tracker.track failed for sweepetf")
+            lines.append(
+                f"\n<b>PLACED</b> id=<code>{_e(result.get('order_id', '?'))}</code>"
+            )
+            return "\n".join(lines)
+
+        def _gamma(args):
+            gs = next((s for s in self.strategies if getattr(s, "name", "") == "gamma_scanner"), None)
+            if gs is None:
+                return "Gamma scanner not loaded. Add <code>gamma_scanner</code> to STRATEGIES."
+            try:
+                n = int(args[0]) if args and args[0].isdigit() else 5
+            except ValueError:
+                n = 5
+            opps = gs.scan()
+            if not opps:
+                return "<b>Cheap gamma</b>\n\nNo candidates below threshold."
+            lines = [f"<b>Cheap gamma — top {min(n, len(opps))}</b>", ""]
+            for o in opps[:n]:
+                lines.append(
+                    f"<code>{_e(o['symbol'])}</code> {_e(o['expiration'])} "
+                    f"K={o['strike']:g} IV={o['iv_pct']:.1f}% "
+                    f"RV={o['rv_pct']:.1f}% ratio={o['iv_rv_ratio']:.2f}\n"
+                    f"  cost=${o['straddle_cost_per_share']:.2f} "
+                    f"γ/$={o['gamma_per_dollar']:.5f} DTE={o['dte']}"
+                )
+            return "\n".join(lines)
+
+        def _unusual(args):
+            ua = next((s for s in self.strategies if getattr(s, "name", "") == "unusual_activity"), None)
+            if ua is None:
+                return "Unusual activity scanner not loaded. Add <code>unusual_activity</code> to STRATEGIES."
+            try:
+                n = int(args[0]) if args and args[0].isdigit() else 10
+            except ValueError:
+                n = 10
+            opps = ua.scan()
+            if not opps:
+                return "<b>Unusual options activity</b>\n\nNo hits above threshold."
+            lines = [f"<b>Unusual options activity — top {min(n, len(opps))}</b>", ""]
+            for o in opps[:n]:
+                lines.append(
+                    f"<code>{_e(o['symbol'])}</code> {_e(o['expiration'])} "
+                    f"${o['strike']:g} {_e(o['side'])}  "
+                    f"vol={o['volume']:,} OI={o['open_interest']:,} "
+                    f"<b>{o['vol_oi_ratio']:.1f}x</b>\n"
+                    f"  mid=${o['mid']:.2f} ~${o['notional']:,.0f} "
+                    f"IV={o['iv_pct']:.1f}% DTE={o['dte']}"
+                )
+            return "\n".join(lines)
+
+        def _covered(args):
+            """Covered call screener — dividend stocks + calls >30 DTE.
+
+            Usage:
+              /covered                  top N (config: COVERED_CALL_TOP_N)
+              /covered 10               top 10
+              /covered KO               single symbol (ignores universe filter)
+              /covered refresh          force scan (no persistent cache yet)
+            """
+            ccs = next(
+                (s for s in self.strategies
+                 if getattr(s, "name", "") == "covered_call_screener"),
+                None,
+            )
+            if ccs is None:
+                return (
+                    "Covered call screener not loaded. "
+                    "Add <code>covered_call_screener</code> to STRATEGIES."
+                )
+            n = self.config.COVERED_CALL_TOP_N
+            symbol: str | None = None
+            for tok in args:
+                t = tok.lower()
+                if t in ("refresh", "-r", "--refresh"):
+                    pass  # no persistent cache yet — scan() always fresh
+                elif t.isdigit():
+                    n = int(t)
+                elif re.fullmatch(r"[A-Za-z]{1,6}", tok):
+                    symbol = tok.upper()
+
+            opps = ccs.scan()
+            if symbol:
+                opps = [o for o in opps if o["symbol"] == symbol]
+            if not opps:
+                return "<b>Covered calls</b>\n\nNo candidates met the thresholds."
+
+            shown = opps[:n] if n > 0 else opps
+            lines = [
+                f"<b>Covered calls — top {len(shown)}/{len(opps)}</b>",
+                "",
+            ]
+            for o in shown:
+                cap = " +cap" if o.get("dividend_in_hold") else ""
+                lines.append(
+                    f"<code>{_e(o['symbol'])}</code> ${o['price']:.2f} → "
+                    f"${o['strike']:g}C {_e(o['expiration'])} "
+                    f"<b>{o['total_annual_yield_pct']:.1f}%/yr</b>{cap}\n"
+                    f"  prem ${o['call_premium']:.2f} · "
+                    f"if-called {o['if_called_yield_pct']:.1f}%/yr · "
+                    f"div {o['dividend_yield_pct']:.1f}% · "
+                    f"DTE {o['dte']} · OTM {o['otm_pct']:.1f}% · "
+                    f"Δ {o['call_delta']:.2f}"
+                )
+
+            out = "\n".join(lines)
+            if len(out) > 3900:
+                out = out[:3900] + "\n<i>… truncated</i>"
+            return out
+
+        def _ivrank(args):
+            if not args:
+                return "Usage: <code>/ivrank SYMBOL [dte=30]</code>"
+            symbol = args[0].upper()
+            dte_target = 30
+            for tok in args[1:]:
+                if tok.lower().startswith("dte="):
+                    try:
+                        dte_target = int(tok.split("=", 1)[1])
+                    except ValueError:
+                        return f"Bad dte: <code>{_e(tok)}</code>"
+            dte_min = max(1, dte_target - 7)
+            dte_max = dte_target + 14
+
+            # Realized vol inline — 20d close-to-close annualized.
+            import math
+            df = self.client.get_ohlcv(symbol, days=60)
+            if df is None or df.empty or len(df) < 21:
+                return f"No OHLCV for <code>{_e(symbol)}</code>."
+            closes = df["close"].astype(float).values[-21:]
+            log_r = [math.log(closes[i] / closes[i-1]) for i in range(1, len(closes))]
+            mean = sum(log_r) / len(log_r)
+            var = sum((r - mean) ** 2 for r in log_r) / (len(log_r) - 1)
+            rv = (var ** 0.5) * math.sqrt(252) * 100
+
+            straddles = self.client.get_atm_straddles(symbol, dte_min, dte_max)
+            if not straddles:
+                return f"No straddles for <code>{_e(symbol)}</code> in DTE {dte_min}-{dte_max}."
+
+            lines = [
+                f"<b>{_e(symbol)} IV vs RV</b>",
+                f"RV(20d): {rv:.1f}%  spot: ${straddles[0].underlying_price:.2f}",
+                "",
+                "<code>expiry     K       IV     ratio  cost    γ/$</code>",
+            ]
+            for s in straddles[:6]:
+                iv = s.iv
+                ratio = iv / rv if rv > 0 else 0
+                tag = " *" if ratio < 1.0 else ""
+                lines.append(
+                    f"<code>{_e(s.expiration)} {s.strike:<7g} "
+                    f"{iv:>5.1f}% {ratio:>5.2f}  "
+                    f"${s.cost:>6.2f} {s.gamma_per_dollar:.5f}</code>{tag}"
+                )
+            lines.append("\n<i>* = cheap (IV &lt; RV)</i>")
+            return "\n".join(lines)
+
+        def _tracker(args):
+            tr = getattr(self, "order_tracker", None)
+            if tr is None:
+                return "Order tracker not running."
+            st = tr.status()
+            pending = st.get("pending", 0)
+            orders = st.get("orders") or []
+            if not orders:
+                return f"<b>Order tracker</b>\n\nPending: {pending}"
+            lines = [f"<b>Order tracker — {pending} pending</b>", ""]
+            for o in orders[:20]:
+                lines.append(
+                    f"<code>{_e(o.get('id', '?'))}</code> "
+                    f"{_e(o.get('side', '?'))} {_e(o.get('symbol', '?'))} "
+                    f"exp=${o.get('expected', 0):.2f} "
+                    f"[{_e(o.get('status', '?'))}] attempts={o.get('attempts', 0)}"
+                )
+            return "\n".join(lines)
+
+        def _sec(args):
+            if not args:
+                return (
+                    "Usage: <code>/sec SYMBOL [form=10-K] [n=5]</code>\n"
+                    "Forms: 10-K (annual), 10-Q (quarterly), 8-K (events)"
+                )
+            symbol = args[0].upper()
+            form = "10-K"
+            limit = 5
+            for tok in args[1:]:
+                t = tok.lower()
+                if t.startswith("form="):
+                    form = tok.split("=", 1)[1].upper()
+                elif t.startswith("n="):
+                    try:
+                        limit = max(1, min(20, int(tok.split("=", 1)[1])))
+                    except ValueError:
+                        pass
+            try:
+                from schwabagent.sec import SECAnalyzer
+                analyzer = SECAnalyzer(self.config)
+                filings = analyzer.get_filings(symbol, form=form, limit=limit)
+            except ImportError:
+                return "SEC module unavailable — install <code>edgar</code> package."
+            if not filings:
+                return f"No <code>{_e(form)}</code> filings for <code>{_e(symbol)}</code>."
+            lines = [f"<b>{_e(symbol)} {_e(form)} filings</b>", ""]
+            for f in filings:
+                desc = (f.description or "")[:60]
+                lines.append(
+                    f"<code>{_e(f.filing_date)}</code> {_e(f.form)}  "
+                    f"{_e(f.accession_number)}" + (f"\n  {_e(desc)}" if desc else "")
+                )
+            return "\n".join(lines)
+
+        def _universe(args):
+            all_syms = self.config.all_symbols
+            per_strategy = [
+                ("watchlist", self.config.watchlist),
+                ("etf_rotation", self.config.etf_universe),
+                ("momentum", self.config.momentum_symbols),
+                ("mean_reversion", self.config.mean_reversion_symbols),
+                ("trend_following", self.config.trend_following_symbols),
+                ("conviction_hold", self.config.conviction_symbols),
+                ("theta", self.config.theta_symbols),
+                ("gamma_scanner", self.config.gamma_scanner_symbols),
+                ("scalp", self.config.scalp_universe),
+            ]
+            lines = [f"<b>Universe — {len(all_syms)} unique symbols</b>", ""]
+            for name, syms in per_strategy:
+                if syms:
+                    lines.append(f"<code>{_e(name)}</code> ({len(syms)}): {_e(', '.join(syms[:12]))}{' …' if len(syms) > 12 else ''}")
+            lines.append(f"\n<i>Total: {len(all_syms)}</i>")
+            return "\n".join(lines)
+
+        def _size(args):
+            if not args:
+                return (
+                    "Usage: <code>/size SYMBOL [price=X]</code>\n"
+                    "Shows max quantity allowed under current risk rules."
+                )
+            symbol = args[0].upper()
+            price_override = None
+            for tok in args[1:]:
+                if tok.lower().startswith("price="):
+                    try:
+                        price_override = float(tok.split("=", 1)[1])
+                    except ValueError:
+                        return f"Bad price: <code>{_e(tok)}</code>"
+            if price_override is not None:
+                price = price_override
+            else:
+                q = (self.client.get_quotes([symbol]) or {}).get(symbol)
+                if q is None or not (q.ask or q.last):
+                    return f"No quote for <code>{_e(symbol)}</code>."
+                price = float(q.ask or q.last)
+
+            account = self._get_account()
+            cfg = self.config
+            # Hard caps from config
+            by_max_order = cfg.MAX_ORDER_VALUE
+            by_max_position = cfg.MAX_POSITION_VALUE
+            by_pct_port = account.total_value * cfg.MAX_POSITION_PCT
+            by_cash = account.cash_available
+            exposure = sum(p.market_value for p in account.positions if p.quantity > 0)
+            by_exposure = max(0.0, cfg.MAX_TOTAL_EXPOSURE - exposure)
+
+            ceiling_dollars = min(by_max_order, by_max_position, by_pct_port, by_cash, by_exposure)
+            max_qty = int(ceiling_dollars // price) if price > 0 else 0
+            # Run the real risk check on that size to catch PDT / closing-only / etc.
+            ok, reason = self.risk.can_buy(symbol, max(1, max_qty), price, account)
+
+            lines = [
+                f"<b>{_e(symbol)} sizing</b>  price=${price:,.2f}",
+                "",
+                f"max_order cap: ${by_max_order:,.0f}",
+                f"max_position cap: ${by_max_position:,.0f}",
+                f"pct_portfolio cap: ${by_pct_port:,.0f} ({cfg.MAX_POSITION_PCT:.0%})",
+                f"cash available: ${by_cash:,.0f}",
+                f"exposure headroom: ${by_exposure:,.0f} (used ${exposure:,.0f} / ${cfg.MAX_TOTAL_EXPOSURE:,.0f})",
+                "",
+                f"<b>Max qty: {max_qty}</b> (${max_qty * price:,.0f})",
+            ]
+            if not ok and max_qty > 0:
+                lines.append(f"\n<b>BLOCKED:</b> <code>{_e(reason)}</code>")
+            return "\n".join(lines)
+
+        def _orders(args):
+            account = self._get_account()
+            orders = self.client.get_open_orders(account.account_hash)
+            if not orders:
+                return "<b>Open orders</b>\n\nNone."
+            lines = [f"<b>Open orders ({len(orders)})</b>", ""]
+            for o in orders[:25]:
+                oid = o.get("orderId", "?")
+                status = o.get("status", "?")
+                otype = o.get("orderType", "?")
+                duration = o.get("duration", "")
+                price = o.get("price")
+                filled = o.get("filledQuantity", 0)
+                qty = o.get("quantity", 0)
+                legs = o.get("orderLegCollection") or []
+                if legs:
+                    leg = legs[0]
+                    sym = (leg.get("instrument") or {}).get("symbol", "?")
+                    instr = leg.get("instruction", "?")
+                else:
+                    sym, instr = "?", "?"
+                price_str = f"${price}" if price else "mkt"
+                lines.append(
+                    f"<code>{_e(oid)}</code> {_e(instr)} {qty} {_e(sym)} "
+                    f"{_e(otype)} @ {_e(price_str)} [{_e(status)}] "
+                    f"filled={filled}/{qty} {_e(duration)}"
+                )
+            return "\n".join(lines)
+
+        def _cancel(args):
+            if not args:
+                return "Usage: <code>/cancel ORDER_ID [ORDER_ID …]</code>"
+            account = self._get_account()
+            lines = ["<b>Cancel</b>", ""]
+            for oid in args:
+                ok = self.client.cancel_order(account.account_hash, oid)
+                lines.append(f"<code>{_e(oid)}</code> — {'OK' if ok else 'FAILED'}")
+            return "\n".join(lines)
+
+        def _jobs(args):
+            if not self.scheduler:
+                return "Scheduler not running."
+            jobs = self.scheduler.list_jobs()
+            if not jobs:
+                return "No scheduled jobs."
+            lines = [f"<b>Scheduled jobs ({len(jobs)})</b>", ""]
+            for j in jobs:
+                tag = "on" if j.get("enabled") else "OFF"
+                next_run = (j.get("next_run") or "?")[:19]
+                last_run = (j.get("last_run") or "—")[:19]
+                runs = j.get("run_count", 0)
+                err = j.get("last_error") or ""
+                line = (
+                    f"<code>{_e(j.get('name', '?'))}</code> [{tag}] "
+                    f"<i>{_e(j.get('schedule', '?'))}</i>\n"
+                    f"  next={_e(next_run)} last={_e(last_run)} runs={runs}"
+                )
+                if err:
+                    line += f"\n  err=<code>{_e(err[:100])}</code>"
+                lines.append(line)
+            return "\n".join(lines)
+
+        def _dream(args):
+            if not self.dreamcycle:
+                return "Dreamcycle not running."
+            st = self.dreamcycle.status()
+            running = "YES" if st.get("running") else "no"
+            lines = [
+                "<b>Dreamcycle</b>",
+                "",
+                f"Running: {running}",
+                f"Cycles: {st.get('cycle_count', 0)}",
+                f"Last run: <code>{_e((st.get('last_run') or '—')[:19])}</code>",
+            ]
+            last = st.get("last_result")
+            if last:
+                lines.append(f"Duration: {last.get('duration', 0):.1f}s")
+                lines.append(f"Signals recorded: {last.get('signals', 0)}")
+                lines.append(f"Drift alerts: {last.get('drift_alerts', 0)}")
+                ok = last.get("phases_ok") or []
+                failed = last.get("phases_failed") or []
+                if ok:
+                    lines.append(f"OK: <code>{_e(', '.join(ok))}</code>")
+                if failed:
+                    lines.append(f"<b>Failed:</b> <code>{_e(', '.join(failed))}</code>")
+                errors = last.get("errors") or []
+                if errors:
+                    lines.append(f"Errors: <code>{_e(str(errors[:3])[:200])}</code>")
+            return "\n".join(lines)
+
+        def _ratelimit(args):
+            st = self.client.rate_limit_stats()
+            lines = ["<b>API rate limits</b>", ""]
+            for label, s in st.items():
+                util = s.get("utilization_pct", 0)
+                cur = s.get("current", 0)
+                mx = s.get("max", 0)
+                total = s.get("total_calls", 0)
+                thr = s.get("total_throttled", 0)
+                lines.append(
+                    f"<code>{_e(label)}</code> {cur}/{mx} ({util:.0f}%) "
+                    f"total={total} throttled={thr}"
+                )
+            return "\n".join(lines)
+
+        def _chain(args):
+            if not args:
+                return (
+                    "Usage: <code>/chain SYMBOL [put|call] [dte=30] [strikes=5]</code>\n"
+                    "Defaults: both sides, dte=30, 5 strikes each way"
+                )
+            symbol = args[0].upper()
+            side = "BOTH"
+            dte_target = 30
+            strike_count = 10
+            for tok in args[1:]:
+                t = tok.lower()
+                if t in ("put", "call"):
+                    side = t.upper()
+                elif t.startswith("dte="):
+                    try:
+                        dte_target = int(t.split("=", 1)[1])
+                    except ValueError:
+                        return f"Bad dte: <code>{_e(tok)}</code>"
+                elif t.startswith("strikes="):
+                    try:
+                        strike_count = int(t.split("=", 1)[1]) * 2
+                    except ValueError:
+                        return f"Bad strikes: <code>{_e(tok)}</code>"
+
+            dte_min = max(1, dte_target - 7)
+            dte_max = dte_target + 14
+
+            sides = ["PUT", "CALL"] if side == "BOTH" else [side]
+            header = (
+                f"<b>{_e(symbol)} chain</b>  "
+                f"DTE {dte_min}-{dte_max}, {strike_count // 2} strikes/side"
+            )
+            blocks = [header]
+            total = 0
+            for s in sides:
+                chain = self.client.get_option_chain(
+                    symbol, s, dte_min, dte_max, strike_count=strike_count,
+                )
+                if not chain:
+                    blocks.append(f"\n<b>{s}</b>: no data")
+                    continue
+                # Keep only the earliest expiration for readability
+                first_exp = chain[0].expiration
+                rows = [c for c in chain if c.expiration == first_exp]
+                total += len(rows)
+                blocks.append(
+                    f"\n<b>{s} {_e(first_exp)}</b> (DTE={rows[0].dte})"
+                )
+                # Header line
+                blocks.append(
+                    "<code>strike    bid     ask    Δ      γ       IV    OI</code>"
+                )
+                for c in rows[:15]:
+                    blocks.append(
+                        f"<code>{c.strike:>7g} {c.bid:>6.2f} {c.ask:>6.2f} "
+                        f"{c.delta:>+5.2f} {c.gamma:>6.4f} {c.iv:>5.1f} "
+                        f"{c.open_interest:>5d}</code>"
+                    )
+            if total == 0:
+                return f"No chain data for <code>{_e(symbol)}</code>."
+            return "\n".join(blocks)
+
+        def _theta(args):
+            theta = next((s for s in self.strategies if getattr(s, "name", "") == "theta"), None)
+            if theta is None:
+                return "Theta strategy not loaded. Add <code>theta</code> to STRATEGIES."
+            rows = theta.theta_status()  # type: ignore[attr-defined]
+            if not rows:
+                return f"<b>Theta wheel</b>\n\nNo tracked symbols. Universe: <code>{_e(','.join(self.config.theta_symbols))}</code>"
+            lines = ["<b>Theta wheel</b>", ""]
+            for r in rows:
+                state = r["state"]
+                sym = r["symbol"]
+                if state == "CASH":
+                    lines.append(f"<code>{_e(sym)}</code> CASH")
+                elif state == "LONG_STOCK":
+                    lines.append(f"<code>{_e(sym)}</code> LONG {r['shares']}sh @ ${r['cost_basis']:.2f}")
+                elif state in ("SHORT_PUT", "SHORT_CALL"):
+                    leg = r.get("leg", {})
+                    lines.append(
+                        f"<code>{_e(sym)}</code> {state} "
+                        f"{leg.get('contracts', 0)}x {leg.get('side', '?')} "
+                        f"{leg.get('strike', 0):g} {leg.get('expiration', '?')} "
+                        f"credit=${leg.get('credit', 0):.2f}"
+                    )
+                else:
+                    lines.append(f"<code>{_e(sym)}</code> {_e(state)}")
+            return "\n".join(lines)
+
+        def _hilo(args):
+            """Scan watchlist ∪ ah_sniper ∪ momentum for new N-day extremes.
+
+            Usage:
+              /hilo                   cached daily OHLCV, default windows 5/20/60/252
+              /hilo refresh           force-refetch from Schwab
+              /hilo 5,20              only scan these windows
+              /hilo refresh 5,20,60   both
+            """
+            from schwabagent.hilo import (
+                DEFAULT_WINDOWS,
+                WINDOW_LABELS,
+                load_or_fetch,
+                scan_hilo,
+            )
+
+            force_refresh = False
+            windows: tuple[int, ...] = DEFAULT_WINDOWS
+            for tok in args:
+                t = tok.lower()
+                if t in ("refresh", "-r", "--refresh"):
+                    force_refresh = True
+                elif "," in t or t.isdigit():
+                    try:
+                        windows = tuple(int(w) for w in t.split(",") if w.strip())
+                    except ValueError:
+                        return f"Bad windows: <code>{_e(tok)}</code>"
+
+            data = load_or_fetch(self.config, self.client, force_refresh=force_refresh)
+            if not data:
+                return "No OHLCV data returned."
+            rows = scan_hilo(data, windows=windows)
+
+            def _label(w: int) -> str:
+                return WINDOW_LABELS.get(w, f"{w}d")
+
+            win_str = "/".join(_label(w) for w in windows)
+            header = f"<b>Hi/Lo scan</b> — {len(data)} symbols, {_e(win_str)}"
+
+            if not rows:
+                return f"{header}\n\nNo new highs or lows."
+
+            highs = sorted(
+                (r for r in rows if r.hits_high),
+                key=lambda r: (-max(r.hits_high), -r.pct_change),
+            )
+            lows = sorted(
+                (r for r in rows if r.hits_low),
+                key=lambda r: (-max(r.hits_low), r.pct_change),
+            )
+
+            lines = [header, ""]
+            if highs:
+                lines.append(f"<b>New highs ({len(highs)})</b>")
+                for r in highs:
+                    tags = " ".join(_label(w) for w in windows if w in r.hits_high)
+                    sign = "+" if r.pct_change >= 0 else ""
+                    lines.append(
+                        f"<code>{_e(r.symbol)}</code> ${r.last_close:,.2f} "
+                        f"{sign}{r.pct_change:.2f}% [{_e(tags)}]"
+                    )
+            if lows:
+                if highs:
+                    lines.append("")
+                lines.append(f"<b>New lows ({len(lows)})</b>")
+                for r in lows:
+                    tags = " ".join(_label(w) for w in windows if w in r.hits_low)
+                    sign = "+" if r.pct_change >= 0 else ""
+                    lines.append(
+                        f"<code>{_e(r.symbol)}</code> ${r.last_close:,.2f} "
+                        f"{sign}{r.pct_change:.2f}% [{_e(tags)}]"
+                    )
+
+            quiet = len(data) - len(rows)
+            lines.append(f"\n<i>{len(highs)} high, {len(lows)} low, {quiet} quiet</i>")
+            return "\n".join(lines)
+
+        def _earnings(args):
+            """Upcoming earnings from Briefing.com — filtered to agent universe.
+
+            Usage:
+              /earnings                 universe, next 7 days
+              /earnings all             all tickers, next 7 days
+              /earnings 14              universe, next 14 days
+              /earnings AAPL            specific ticker, full 5 weeks
+              /earnings refresh         force recache
+            """
+            from datetime import datetime as _dt, timedelta as _td
+            from zoneinfo import ZoneInfo as _ZI
+            from schwabagent.scrapers.earnings_calendar import (
+                agent_universe,
+                fetch_earnings_calendar,
+                filter_rows,
+            )
+
+            force_refresh = False
+            show_all = False
+            days = 7
+            symbol: str | None = None
+            for tok in args:
+                t = tok.lower()
+                if t in ("refresh", "-r", "--refresh"):
+                    force_refresh = True
+                elif t == "all":
+                    show_all = True
+                elif t.isdigit():
+                    days = int(t)
+                elif re.fullmatch(r"[A-Za-z]{1,6}", tok):
+                    symbol = tok.upper()
+
+            rows = fetch_earnings_calendar(self.config, force_refresh=force_refresh)
+            if not rows:
+                return "No earnings data (Briefing layout may have changed)."
+
+            start = _dt.now(_ZI("America/New_York")).date()
+            if symbol:
+                filter_syms: set[str] | None = {symbol}
+                window_end = None
+            else:
+                filter_syms = None if show_all else agent_universe(self.config)
+                window_end = start + _td(days=days)
+
+            filtered = filter_rows(
+                rows, symbols=filter_syms, start=start, end=window_end,
+            )
+
+            if symbol:
+                header = f"<b>Earnings — {_e(symbol)}</b>"
+            elif show_all:
+                header = f"<b>Earnings — all tickers, next {days}d</b>"
+            else:
+                header = f"<b>Earnings — universe, next {days}d</b>"
+
+            if not filtered:
+                return f"{header}\n\nNo matching releases."
+
+            filtered = sorted(
+                filtered,
+                key=lambda r: (r.date, 0 if r.session == "BMO" else 1, r.symbol),
+            )
+            lines = [header, ""]
+            current_date = None
+            for r in filtered:
+                if r.date != current_date:
+                    current_date = r.date
+                    lines.append(f"<b>{_e(current_date)}</b>")
+                mark = "✓" if r.confirmed else "·"
+                cons = (
+                    f"cons ${r.consensus_eps:.2f}"
+                    if r.consensus_eps is not None else "cons —"
+                )
+                if r.reported and r.actual_eps is not None:
+                    tag = (
+                        "BEAT"
+                        if (r.consensus_eps is not None
+                            and r.actual_eps >= r.consensus_eps)
+                        else "MISS"
+                    )
+                    actual = f"act ${r.actual_eps:.2f} [{tag}]"
+                else:
+                    actual = "act —"
+                lines.append(
+                    f"{mark} <code>{_e(r.symbol)}</code> {r.session} "
+                    f"{_e(r.company[:24])} · {actual} · {cons}"
+                )
+
+            out = "\n".join(lines)
+            if len(out) > 3900:
+                out = out[:3900] + "\n<i>… truncated</i>"
+            return out
+
+        def _dividends(args):
+            """Upcoming ex-dividends from Nasdaq — filtered to agent universe.
+
+            Usage:
+              /dividends                universe, next 7 days
+              /dividends all            all tickers, next 7 days
+              /dividends 14             universe, next 14 days
+              /dividends AAPL           specific ticker, full window
+              /dividends refresh        force recache
+            """
+            from datetime import datetime as _dt, timedelta as _td
+            from zoneinfo import ZoneInfo as _ZI
+            from schwabagent.scrapers.dividend_calendar import (
+                fetch_dividend_calendar,
+                filter_rows as _div_filter_rows,
+            )
+            from schwabagent.scrapers.earnings_calendar import agent_universe
+
+            force_refresh = False
+            show_all = False
+            days = 7
+            symbol: str | None = None
+            for tok in args:
+                t = tok.lower()
+                if t in ("refresh", "-r", "--refresh"):
+                    force_refresh = True
+                elif t == "all":
+                    show_all = True
+                elif t.isdigit():
+                    days = int(t)
+                elif re.fullmatch(r"[A-Za-z]{1,6}", tok):
+                    symbol = tok.upper()
+
+            rows = fetch_dividend_calendar(self.config, force_refresh=force_refresh)
+            if not rows:
+                return "No dividend data (Nasdaq API layout may have changed)."
+
+            start = _dt.now(_ZI("America/New_York")).date()
+            if symbol:
+                filter_syms: set[str] | None = {symbol}
+                window_end = None
+            else:
+                filter_syms = None if show_all else agent_universe(self.config)
+                window_end = start + _td(days=days)
+
+            filtered = _div_filter_rows(
+                rows, symbols=filter_syms, start=start, end=window_end,
+            )
+
+            if symbol:
+                header = f"<b>Ex-Dividends — {_e(symbol)}</b>"
+            elif show_all:
+                header = f"<b>Ex-Dividends — all tickers, next {days}d</b>"
+            else:
+                header = f"<b>Ex-Dividends — universe, next {days}d</b>"
+
+            if not filtered:
+                return f"{header}\n\nNo matching ex-dividends."
+
+            filtered = sorted(filtered, key=lambda r: (r.ex_date, r.symbol))
+            lines = [header, ""]
+            current_date = None
+            for r in filtered:
+                if r.ex_date != current_date:
+                    current_date = r.ex_date
+                    lines.append(f"<b>{_e(current_date)}</b>")
+                amt = f"${r.amount:.3f}" if r.amount is not None else "—"
+                ann = (
+                    f"ann ${r.annual_dividend:.2f}"
+                    if r.annual_dividend else "ann —"
+                )
+                pay = f"pay {r.payment_date}" if r.payment_date else "pay —"
+                lines.append(
+                    f"· <code>{_e(r.symbol)}</code> "
+                    f"{_e(r.company[:24])} · {amt} · {ann} · {pay}"
+                )
+
+            out = "\n".join(lines)
+            if len(out) > 3900:
+                out = out[:3900] + "\n<i>… truncated</i>"
+            return out
+
+        def _splits(args):
+            """Upcoming stock splits from Briefing.com.
+
+            Usage:
+              /splits                   universe, full window
+              /splits all               all tickers, full window
+              /splits 14                universe, next 14 days
+              /splits AAPL              specific ticker
+              /splits reverse           reverse-splits only (distress signal)
+              /splits refresh           force recache
+            """
+            from datetime import datetime as _dt, timedelta as _td
+            from zoneinfo import ZoneInfo as _ZI
+            from schwabagent.scrapers.splits_calendar import (
+                fetch_splits_calendar,
+                filter_rows as _split_filter_rows,
+            )
+            from schwabagent.scrapers.earnings_calendar import agent_universe
+
+            force_refresh = False
+            show_all = False
+            reverse_only = False
+            days = 0
+            symbol: str | None = None
+            for tok in args:
+                t = tok.lower()
+                if t in ("refresh", "-r", "--refresh"):
+                    force_refresh = True
+                elif t == "all":
+                    show_all = True
+                elif t in ("reverse", "rev", "-rv"):
+                    reverse_only = True
+                elif t.isdigit():
+                    days = int(t)
+                elif re.fullmatch(r"[A-Za-z]{1,6}", tok):
+                    symbol = tok.upper()
+
+            rows = fetch_splits_calendar(self.config, force_refresh=force_refresh)
+            if not rows:
+                return "No splits data (Briefing layout may have changed)."
+
+            start = _dt.now(_ZI("America/New_York")).date()
+            if symbol:
+                filter_syms: set[str] | None = {symbol}
+                window_end = None
+            else:
+                filter_syms = None if show_all else agent_universe(self.config)
+                window_end = start + _td(days=days) if days > 0 else None
+
+            filtered = _split_filter_rows(
+                rows, symbols=filter_syms, start=start, end=window_end,
+                reverse_only=reverse_only,
+            )
+
+            if symbol:
+                header = f"<b>Splits — {_e(symbol)}</b>"
+            elif reverse_only:
+                header = "<b>Reverse splits — distress watch</b>"
+            elif show_all:
+                header = f"<b>Splits — all tickers{', next ' + str(days) + 'd' if days else ''}</b>"
+            else:
+                header = f"<b>Splits — universe{', next ' + str(days) + 'd' if days else ''}</b>"
+
+            if not filtered:
+                return f"{header}\n\nNo matching splits."
+
+            filtered = sorted(filtered, key=lambda r: (r.ex_date, r.symbol))
+            lines = [header, ""]
+            current_date = None
+            for r in filtered:
+                if r.ex_date != current_date:
+                    current_date = r.ex_date
+                    lines.append(f"<b>{_e(current_date)}</b>")
+                direction = "⮃" if r.is_reverse else "⮁"
+                pay = f"pay {r.payable_date}" if r.payable_date else "pay —"
+                lines.append(
+                    f"{direction} <code>{_e(r.symbol)}</code> "
+                    f"{_e(r.company[:24])} · {r.ratio} · {pay}"
+                )
+
+            out = "\n".join(lines)
+            if len(out) > 3900:
+                out = out[:3900] + "\n<i>… truncated</i>"
+            return out
+
+        def _ratings(args):
+            """Today's analyst upgrades / downgrades from Briefing.com.
+
+            Usage:
+              /ratings                  universe, both directions
+              /ratings all              all tickers
+              /ratings up               upgrades only
+              /ratings down             downgrades only
+              /ratings AAPL             specific ticker
+              /ratings refresh          force recache
+            """
+            from schwabagent.scrapers.upgrades_downgrades import (
+                fetch_ratings,
+                filter_rows as _rate_filter_rows,
+            )
+            from schwabagent.scrapers.earnings_calendar import agent_universe
+
+            force_refresh = False
+            show_all = False
+            action: str | None = None
+            symbol: str | None = None
+            for tok in args:
+                t = tok.lower()
+                if t in ("refresh", "-r", "--refresh"):
+                    force_refresh = True
+                elif t == "all":
+                    show_all = True
+                elif t in ("up", "upgrades"):
+                    action = "upgrade"
+                elif t in ("down", "downgrades"):
+                    action = "downgrade"
+                elif re.fullmatch(r"[A-Za-z]{1,6}", tok):
+                    symbol = tok.upper()
+
+            rows = fetch_ratings(self.config, force_refresh=force_refresh)
+            if not rows:
+                return "No ratings data (Briefing layout may have changed)."
+
+            if symbol:
+                filter_syms: set[str] | None = {symbol}
+            else:
+                filter_syms = None if show_all else agent_universe(self.config)
+
+            filtered = _rate_filter_rows(rows, symbols=filter_syms, action=action)
+
+            if symbol:
+                header = f"<b>Ratings — {_e(symbol)}</b>"
+            elif action:
+                scope = "all tickers" if show_all else "universe"
+                header = f"<b>{action.capitalize()}s — {scope}</b>"
+            elif show_all:
+                header = "<b>Ratings — all tickers</b>"
+            else:
+                header = "<b>Ratings — universe</b>"
+
+            if not filtered:
+                return f"{header}\n\nNo matching ratings today."
+
+            filtered = sorted(filtered, key=lambda r: (r.action, r.symbol))
+            lines = [header, ""]
+            current_action = None
+            for r in filtered:
+                if r.action != current_action:
+                    current_action = r.action
+                    lines.append(f"<b>— {r.action.capitalize()}s —</b>")
+                tgt = f"${r.price_target:.0f}" if r.price_target is not None else "—"
+                change = (
+                    f"{r.from_rating} » {r.to_rating}"
+                    if r.from_rating else r.to_rating
+                )
+                lines.append(
+                    f"· <code>{_e(r.symbol)}</code> "
+                    f"{_e(r.firm[:18])} · {_e(change[:32])} · tgt {tgt}"
+                )
+
+            out = "\n".join(lines)
+            if len(out) > 3900:
+                out = out[:3900] + "\n<i>… truncated</i>"
+            return out
+
+        def _parse_trade_args(args: list[str]) -> tuple[dict | str, ...]:
+            """Parse shared /buy /sell syntax. Returns (opts, error_msg_or_None).
+
+            Syntax: SYMBOL QTY|all [limit=X.XX] [market] [confirm]
+            """
+            if len(args) < 2:
+                return {}, "missing args"
+            opts: dict = {
+                "symbol": args[0].upper(),
+                "qty_raw": args[1].lower(),
+                "order_type": None,
+                "limit_price": None,
+                "confirm": False,
+            }
+            for tok in args[2:]:
+                t = tok.lower()
+                if t == "confirm":
+                    opts["confirm"] = True
+                elif t == "market":
+                    opts["order_type"] = "MARKET"
+                elif t.startswith("limit="):
+                    try:
+                        opts["limit_price"] = float(t.split("=", 1)[1])
+                        opts["order_type"] = "LIMIT"
+                    except ValueError:
+                        return {}, f"bad limit price: {_e(tok)}"
+                else:
+                    return {}, f"unknown token: {_e(tok)}"
+            return opts, None
+
+        def _trade_reply(side: str, opts: dict, quote_price: float, qty: int,
+                          account, allowed: bool, reason: str, placed: dict | None) -> str:
+            sym = opts["symbol"]
+            value = qty * quote_price
+            mode = "LIVE" if (opts["confirm"] and not self.config.DRY_RUN) else (
+                "DRY" if opts["confirm"] else "PREVIEW"
+            )
+            lines = [
+                f"<b>{side} {_e(sym)}</b>  <i>{mode}</i>",
+                f"Qty: {qty} @ ~${quote_price:,.2f}",
+                f"Value: ${value:,.2f}",
+                f"Order type: {_e(opts['order_type'] or self.config.ORDER_TYPE or 'LIMIT')}",
+            ]
+            if opts["limit_price"] is not None:
+                lines.append(f"Limit: ${opts['limit_price']:,.2f}")
+            if not allowed:
+                lines.append(f"<b>BLOCKED:</b> <code>{_e(reason)}</code>")
+                return "\n".join(lines)
+            if not opts["confirm"]:
+                lines.append(f"\nAdd <code>confirm</code> to place. Cash: ${account.cash_available:,.2f}")
+                return "\n".join(lines)
+            if placed is None:
+                lines.append("\nDRY_RUN=true — not placed. Flip DRY_RUN=false in .env for live.")
+                return "\n".join(lines)
+            if placed.get("status") != "ok":
+                lines.append(f"<b>ORDER FAILED:</b> <code>{_e(placed.get('error', '?'))}</code>")
+                return "\n".join(lines)
+            lines.append(f"<b>PLACED</b> id=<code>{_e(placed.get('order_id', '?'))}</code>")
+            return "\n".join(lines)
+
+        def _execute_trade(side: str, opts: dict, qty: int, quote_price: float,
+                            account) -> dict | None:
+            """Call place_order and plumb the result through risk + state + alerts."""
+            if self.config.DRY_RUN:
+                return None
+            result = self.client.place_order(
+                account.account_hash, opts["symbol"], side, qty,
+                order_type=opts["order_type"],
+                limit_price=opts["limit_price"],
+            )
+            if result.get("status") != "ok":
+                return result
+            self.risk.record_trade(opts["symbol"], side, qty, quote_price, strategy="telegram")
+            trade = {
+                "strategy": "telegram",
+                "symbol": opts["symbol"],
+                "side": side,
+                "quantity": qty,
+                "price": quote_price,
+                "value": qty * quote_price,
+                "dry_run": False,
+                **result,
+            }
+            self.state.append_trade(trade)
+            if self.telegram:
+                self.telegram.send_trade_alert(trade)
+            if result.get("order_id") and result["order_id"] != "dry":
+                try:
+                    self.order_tracker.track(
+                        order_id=result["order_id"],
+                        symbol=opts["symbol"],
+                        side=side,
+                        quantity=qty,
+                        expected_price=quote_price,
+                        account_hash=account.account_hash,
+                        strategy="telegram",
+                    )
+                except Exception:
+                    logger.exception("order_tracker.track failed for telegram trade")
+            return result
+
+        def _buy(args):
+            opts, err = _parse_trade_args(args)
+            if err:
+                return (
+                    "Usage: <code>/buy SYMBOL QTY [limit=X.XX] [market] [confirm]</code>\n"
+                    f"{_e(err)}"
+                )
+            try:
+                qty = int(opts["qty_raw"])
+            except ValueError:
+                return f"Invalid qty: <code>{_e(opts['qty_raw'])}</code>"
+            if qty <= 0:
+                return "Quantity must be positive."
+
+            quotes = self.client.get_quotes([opts["symbol"]])
+            q = quotes.get(opts["symbol"]) if quotes else None
+            if not q or not (q.ask or q.last):
+                return f"No quote for <code>{_e(opts['symbol'])}</code>."
+            price = float(q.ask or q.last)
+
+            account = self._get_account()
+            allowed, reason = self.risk.can_buy(opts["symbol"], qty, price, account)
+            placed = None
+            if allowed and opts["confirm"]:
+                placed = _execute_trade("BUY", opts, qty, price, account)
+            return _trade_reply("BUY", opts, price, qty, account, allowed, reason, placed)
+
+        def _sell(args):
+            opts, err = _parse_trade_args(args)
+            if err:
+                return (
+                    "Usage: <code>/sell SYMBOL QTY|all [limit=X.XX] [market] [confirm]</code>\n"
+                    f"{_e(err)}"
+                )
+            account = self._get_account()
+            held = next(
+                (p for p in account.positions if p.symbol == opts["symbol"] and p.quantity > 0),
+                None,
+            )
+            if held is None:
+                return f"No position in <code>{_e(opts['symbol'])}</code>."
+            if opts["qty_raw"] == "all":
+                qty = int(held.quantity)
+            else:
+                try:
+                    qty = int(opts["qty_raw"])
+                except ValueError:
+                    return f"Invalid qty: <code>{_e(opts['qty_raw'])}</code>"
+            if qty <= 0:
+                return "Quantity must be positive."
+            if qty > held.quantity:
+                return f"Holding {held.quantity:.0f} — cannot sell {qty}."
+
+            quotes = self.client.get_quotes([opts["symbol"]])
+            q = quotes.get(opts["symbol"]) if quotes else None
+            if not q or not (q.bid or q.last):
+                return f"No quote for <code>{_e(opts['symbol'])}</code>."
+            price = float(q.bid or q.last)
+
+            allowed, reason = self.risk.can_sell(opts["symbol"], qty, price, account)
+            placed = None
+            if allowed and opts["confirm"]:
+                placed = _execute_trade("SELL", opts, qty, price, account)
+            return _trade_reply("SELL", opts, price, qty, account, allowed, reason, placed)
+
         def _pf(args):
             """Render a Point & Figure chart as a monospace Telegram message.
 
@@ -507,6 +1903,8 @@ class AgentRunner:
         bot.register_command("kill", _safe(_kill), "Activate kill switch")
         bot.register_command("resume", _safe(_resume), "Deactivate kill switch")
         bot.register_command("scan", _safe(_scan), "Read-only scan — top N signals")
+        bot.register_command("yields", _safe(_yields), "Treasury yield curve + spreads")
+        bot.register_command("commodities", _safe(_commodities), "Commodity ETF prices + daily moves")
         bot.register_command("regime", _safe(_regime), "Current intermarket regime")
         bot.register_command("feedback", _safe(_feedback), "Win-rate + P&L per strategy")
         bot.register_command("drift", _safe(_drift), "ML feedback drift alerts")
@@ -517,6 +1915,30 @@ class AgentRunner:
         bot.register_command("quote", _safe(_quote), "Quote for SYMBOL")
         bot.register_command("pf", _safe(_pf), "Point & Figure chart (box=, rev=, dur=, period=)")
         bot.register_command("toggle", _safe(_toggle), "Flip a strategy's live flag")
+        bot.register_command("buy", _safe(_buy), "Buy SYMBOL QTY [limit=X] [market] [confirm]")
+        bot.register_command("sell", _safe(_sell), "Sell SYMBOL QTY|all [limit=X] [market] [confirm]")
+        bot.register_command("theta", _safe(_theta), "Theta wheel state per symbol")
+        bot.register_command("hilo", _safe(_hilo), "New N-day highs/lows across universe")
+        bot.register_command("earnings", _safe(_earnings), "Upcoming earnings from Briefing.com")
+        bot.register_command("dividends", _safe(_dividends), "Upcoming ex-dividends from Nasdaq")
+        bot.register_command("splits", _safe(_splits), "Upcoming stock splits from Briefing.com")
+        bot.register_command("ratings", _safe(_ratings), "Today's analyst upgrades/downgrades")
+        bot.register_command("orders", _safe(_orders), "Open working orders")
+        bot.register_command("cancel", _safe(_cancel), "Cancel ORDER_ID [ORDER_ID …]")
+        bot.register_command("jobs", _safe(_jobs), "Scheduler jobs + next fire")
+        bot.register_command("dream", _safe(_dream), "Dreamcycle status")
+        bot.register_command("ratelimit", _safe(_ratelimit), "Schwab API rate limit usage")
+        bot.register_command("chain", _safe(_chain), "Option chain SYMBOL [put|call] [dte=N] [strikes=N]")
+        bot.register_command("gamma", _safe(_gamma), "Cheap gamma scanner — top N straddles")
+        bot.register_command("unusual", _safe(_unusual), "Unusual options activity — vol/OI spikes")
+        bot.register_command("covered", _safe(_covered), "Covered call screener — dividend stocks + calls >30 DTE")
+        bot.register_command("ivrank", _safe(_ivrank), "Single-symbol IV/RV comparison")
+        bot.register_command("tracker", _safe(_tracker), "Pending order fill tracker")
+        bot.register_command("sec", _safe(_sec), "Recent SEC filings for SYMBOL")
+        bot.register_command("universe", _safe(_universe), "Consolidated symbol universe per strategy")
+        bot.register_command("size", _safe(_size), "Max position size under risk rules")
+        bot.register_command("sweep", _safe(_sweep), "Sweep idle cash into SWVXX money market")
+        bot.register_command("sweepetf", _safe(_sweepetf), "Sweep idle cash into SGOV short-Treasury ETF")
 
     def _persist_live_flag(self, attr: str, value: bool) -> None:
         """Rewrite .env in place so a runtime flag flip survives restart."""
@@ -567,6 +1989,20 @@ class AgentRunner:
             strategies.append(ETFScalpStrategy(self.client, self.config, self.risk, self.state))
         if "conviction_hold" in enabled:
             strategies.append(ConvictionHoldStrategy(self.client, self.config, self.risk, self.state))
+        if "brown_momentum" in enabled:
+            strategies.append(BrownMomentumStrategy(self.client, self.config, self.risk, self.state))
+        if "tick_breadth" in enabled:
+            strategies.append(TickBreadthStrategy(self.client, self.config, self.risk, self.state))
+        if "ah_sniper" in enabled:
+            strategies.append(AhSniperStrategy(self.client, self.config, self.risk, self.state))
+        if "theta" in enabled:
+            strategies.append(ThetaStrategy(self.client, self.config, self.risk, self.state))
+        if "gamma_scanner" in enabled:
+            strategies.append(GammaScannerStrategy(self.client, self.config, self.risk, self.state))
+        if "covered_call_screener" in enabled:
+            strategies.append(CoveredCallScreener(self.client, self.config, self.risk, self.state))
+        if "unusual_activity" in enabled:
+            strategies.append(UnusualActivityStrategy(self.client, self.config, self.risk, self.state))
 
         if not strategies:
             logger.warning("No strategies loaded — check STRATEGIES in .env")

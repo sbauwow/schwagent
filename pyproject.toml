@@ -1,6 +1,6 @@
 [project]
 name = "schwagent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Automated equity trading agent for Charles Schwab with multiple quantitative strategies"
 requires-python = ">=3.11"
 dependencies = [

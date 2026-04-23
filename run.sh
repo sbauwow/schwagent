@@ -141,7 +141,7 @@ cmd_status() {
     echo -e "    LLM          = $(grep '^LLM_ENABLED' .env 2>/dev/null | cut -d= -f2)"
     echo ""
     echo -e "  Live trading by strategy:"
-    for STRAT in ETF_ROTATION MOMENTUM MEAN_REVERSION TREND_FOLLOWING COMPOSITE ETF_SCALP CONVICTION_HOLD; do
+    for STRAT in ETF_ROTATION MOMENTUM MEAN_REVERSION TREND_FOLLOWING COMPOSITE ETF_SCALP CONVICTION_HOLD BROWN_MOMENTUM TICK_BREADTH AH_SNIPER; do
         VAL=$(grep "^LIVE_${STRAT}" .env 2>/dev/null | cut -d= -f2)
         if [ "$VAL" = "true" ]; then
             echo -e "    LIVE_${STRAT} = ${GREEN}true${NC}"
@@ -929,6 +929,37 @@ cmd_web() {
     $VENV -m schwabagent.cli --web
 }
 
+cmd_hilo() {
+    # High/low scanner — find stocks hitting fresh N-day highs and lows
+    # across the configured universe (watchlist ∪ ah_sniper ∪ momentum).
+    # Cached to ~/.schwagent/hilo_cache.csv once per ET trading day.
+    # Usage: ./run.sh hilo [--refresh] [--windows 5,20,60,252]
+    shift || true
+    $VENV -m schwabagent.hilo "$@"
+}
+
+cmd_earnings() {
+    # Earnings calendar scraper — Briefing.com, ~5 weeks of US releases.
+    # Filters to watchlist ∪ ah_sniper ∪ momentum by default.
+    # Cached to ~/.schwagent/earnings_calendar.json once per ET day.
+    # Usage: ./run.sh earnings [--refresh] [--all] [--days 7] [--symbol AAPL]
+    shift || true
+    $VENV -m schwabagent.scrapers.earnings_calendar "$@"
+}
+
+cmd_autoresearch() {
+    # Full validation pipeline across every strategy: backtest + Monte Carlo +
+    # bootstrap Sharpe CI + walk-forward + SPY baseline + LLM critique. Writes
+    # per-strategy markdown reports and a ranked leaderboard under
+    # ~/.schwagent/research/. Pass --force-fetch to rebuild the data CSV
+    # even if it's fresh.
+    FORCE_FLAG=""
+    if [ "${2:-}" = "--force-fetch" ] || [ "${2:-}" = "-f" ]; then
+        FORCE_FLAG="--autoresearch-force-fetch"
+    fi
+    $VENV -m schwabagent.cli --autoresearch $FORCE_FLAG
+}
+
 cmd_ref() {
     # Reference skills (bundled with package, ported from vibe-trading).
     # Usage: ./run.sh ref            → list all skills grouped by category
@@ -1087,6 +1118,9 @@ case "${1:-once}" in
     feedback) cmd_feedback "$@" ;;
     backtest) cmd_backtest "$@" ;;
     validate) cmd_validate "$@" ;;
+    autoresearch) cmd_autoresearch "$@" ;;
+    hilo) cmd_hilo "$@" ;;
+    earnings) cmd_earnings "$@" ;;
     options)  cmd_options "$@" ;;
     optimize) cmd_optimize "$@" ;;
     ta)       cmd_ta "$@" ;;
@@ -1096,7 +1130,7 @@ case "${1:-once}" in
     ref)     shift; cmd_ref "$@" ;;
     swarm)   shift; cmd_swarm "$@" ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|ta|skills|feedback|backtest|validate|options|optimize|dream|sec|web|ref|swarm]"
+        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|ta|skills|feedback|backtest|validate|autoresearch|hilo|earnings|options|optimize|dream|sec|web|ref|swarm]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
@@ -1110,6 +1144,9 @@ case "${1:-once}" in
         echo "  feedback Show signal accuracy, calibration, and drift alerts"
         echo "  backtest Run strategy backtest (e.g. ./run.sh backtest momentum 2020-01-01 2024-12-31)"
         echo "  validate Backtest + statistical validation (Monte Carlo + Bootstrap + Walk-Forward)"
+        echo "  autoresearch Full pipeline — backtest+validation+LLM critique for every strategy"
+        echo "  hilo     Scan for stocks hitting new 5d/20d/60d/52w highs and lows"
+        echo "  earnings Briefing.com earnings calendar scraper (~5 weeks ahead)"
         echo "  options  Options pricing (price|iv|strategy — Black-Scholes, IV solver, multi-leg)"
         echo "  optimize Portfolio optimization via PyPortfolioOpt (max Sharpe, min vol, HRP)"
         echo "  ta       Technical indicators via the ta library (./run.sh ta [list|<indicator> <symbol>])"

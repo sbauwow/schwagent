@@ -4,13 +4,14 @@ Runs periodically (configurable interval) and performs market analysis,
 portfolio maintenance, and strategy tuning without user interaction.
 
 Cycle phases:
-  1. SCAN      — refresh signals across all universes
-  2. CALIBRATE — run auto-tuner, check drift, update strategy states
-  3. RESEARCH  — earnings proximity, dividend dates, volume anomalies
-  4. RECONCILE — compare expected vs actual positions
-  5. DIGEST    — build daily summary, send via Telegram
-  6. IMPROVE   — analyze feedback patterns, flag parameter changes
-  7. CLEANUP   — prune old data, rotate logs
+  1. SCAN            — refresh signals across all universes
+  2. CALIBRATE       — run auto-tuner, check drift, update strategy states
+  3. RESEARCH        — earnings proximity, dividend dates, volume anomalies
+  4. RESEARCH_PAPERS — pull quant-finance feeds, score, digest to Telegram
+  5. RECONCILE       — compare expected vs actual positions
+  6. DIGEST          — build daily summary, send via Telegram
+  7. IMPROVE         — analyze feedback patterns, flag parameter changes
+  8. CLEANUP         — prune old data, rotate logs
 
 Each phase is independent — a failure in one doesn't block the rest.
 """
@@ -42,6 +43,8 @@ class DreamResult:
     position_mismatches: int = 0
     auto_tune_actions: int = 0
     digest_sent: bool = False
+    quant_papers_fetched: int = 0
+    quant_papers_notified: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -87,6 +90,7 @@ class DreamCycle:
             ("scan", self._phase_scan),
             ("calibrate", self._phase_calibrate),
             ("research", self._phase_research),
+            ("research_papers", self._phase_research_papers),
             ("reconcile", self._phase_reconcile),
             ("digest", self._phase_digest),
             ("improve", self._phase_improve),
@@ -206,7 +210,36 @@ class DreamCycle:
         if volume_anomalies:
             logger.warning("[dreamcycle:research] Price anomalies: %s", volume_anomalies)
 
-    # ── Phase 4: RECONCILE ───────────────────────────────────────────────
+    # ── Phase 4: RESEARCH_PAPERS ─────────────────────────────────────────
+
+    def _phase_research_papers(self, result: DreamResult) -> None:
+        """Fetch + score quant-finance papers, digest top-N to Telegram."""
+        config = self._config
+        if not getattr(config, "QUANT_RESEARCH_ENABLED", False):
+            return
+
+        from schwabagent.scrapers import quant_research as qr
+
+        runner = self._runner
+        llm = getattr(runner, "llm", None) if getattr(config, "QUANT_RESEARCH_LLM_SUMMARIES", False) else None
+
+        inserted = qr.fetch_new_papers(config, llm=llm)
+        result.quant_papers_fetched = len(inserted)
+
+        top_n = int(getattr(config, "QUANT_RESEARCH_DIGEST_TOP_N", 5))
+        top = qr.top_unread(config, limit=top_n)
+        if not top:
+            return
+
+        if runner.telegram:
+            try:
+                runner.telegram.send_quant_papers(top)
+                qr.mark_notified(config, [p.id for p in top if p.id is not None])
+                result.quant_papers_notified = len(top)
+            except Exception as e:
+                logger.warning("[dreamcycle:research_papers] digest failed: %s", e)
+
+    # ── Phase 5: RECONCILE ───────────────────────────────────────────────
 
     def _phase_reconcile(self, result: DreamResult) -> None:
         """Compare expected positions vs actual from Schwab API."""
@@ -247,7 +280,7 @@ class DreamCycle:
                 )
             runner.telegram.send_alert("\n".join(lines))
 
-    # ── Phase 5: DIGEST ──────────────────────────────────────────────────
+    # ── Phase 6: DIGEST ──────────────────────────────────────────────────
 
     def _phase_digest(self, result: DreamResult) -> None:
         """Build and send daily summary via Telegram."""
@@ -286,7 +319,7 @@ class DreamCycle:
         state["last_digest_date"] = today
         runner.state.save_risk_state(state)
 
-    # ── Phase 6: IMPROVE ─────────────────────────────────────────────────
+    # ── Phase 7: IMPROVE ─────────────────────────────────────────────────
 
     def _phase_improve(self, result: DreamResult) -> None:
         """Analyze feedback patterns and identify improvements."""
@@ -351,12 +384,21 @@ class DreamCycle:
                     lines.append(f"\\- `{_escape_md(imp['strategy'])}` {_escape_md(imp['type'])}: {_escape_md(imp['reason'])}")
                 runner.telegram.send_alert("\n".join(lines))
 
-    # ── Phase 7: CLEANUP ─────────────────────────────────────────────────
+    # ── Phase 8: CLEANUP ─────────────────────────────────────────────────
 
     def _phase_cleanup(self, result: DreamResult) -> None:
-        """Prune old feedback data."""
+        """Prune old feedback data and stale quant-research rows."""
         runner = self._runner
         runner.feedback.cleanup(retention_days=90)
+
+        if getattr(self._config, "QUANT_RESEARCH_ENABLED", False):
+            try:
+                from schwabagent.scrapers import quant_research as qr
+                pruned = qr.cleanup(self._config)
+                if pruned:
+                    logger.info("[dreamcycle:cleanup] pruned %d quant_papers rows", pruned)
+            except Exception as e:
+                logger.warning("[dreamcycle:cleanup] quant_research prune failed: %s", e)
 
     # ── Status ───────────────────────────────────────────────────────────
 

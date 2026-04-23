@@ -9,14 +9,19 @@ returned directly from the Schwab API:
 - Closing-only restriction: if Schwab has flagged the account, block new buys.
 - Settlement: tracks `unsettledCash` to avoid free-riding in cash accounts.
 - Wash sale awareness: flags same-symbol buy within 30 days of a loss sale.
+- Event blackout: warns or blocks BUYs within N days of a scheduled earnings
+  release or ex-dividend date (from the Briefing / Nasdaq scrapers).
 
 These rules run *before* the RiskManager position-size checks and can hard-
 block an order regardless of strategy signal strength.
 """
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from schwabagent.config import Config
 from schwabagent.persistence import StateStore
@@ -26,6 +31,7 @@ logger = logging.getLogger(__name__)
 _PDT_MAX_DAY_TRADES = 3
 _PDT_EQUITY_THRESHOLD = 25_000.0
 _WASH_SALE_DAYS = 30
+_ET = ZoneInfo("America/New_York")
 
 
 class TradingRules:
@@ -34,6 +40,12 @@ class TradingRules:
     def __init__(self, config: Config, state: StateStore):
         self.config = config
         self.state = state
+        # Lazy-loaded blackout indexes: {symbol: set[date]}.
+        # Populated on first check; refreshed when the cache file mtime changes.
+        self._earnings_index: dict[str, set[date]] | None = None
+        self._earnings_mtime: float = 0.0
+        self._dividend_index: dict[str, set[date]] | None = None
+        self._dividend_mtime: float = 0.0
 
     def check_order(
         self,
@@ -56,6 +68,7 @@ class TradingRules:
             self._check_closing_only(side, is_closing_only),
             self._check_pdt(symbol, side, account_value, account_type, round_trips, is_day_trader),
             self._check_wash_sale(symbol, side),
+            self._check_event_blackout(symbol, side),
         ]
 
         for allowed, reason in checks:
@@ -179,6 +192,131 @@ class TradingRules:
                 break
 
         return True, ""
+
+    # ── Event blackout (earnings / ex-dividend) ─────────────────────────
+
+    def _check_event_blackout(
+        self, symbol: str, side: str,
+    ) -> tuple[bool, str]:
+        """Warn or block BUYs within N days of a scheduled earnings release
+        or ex-dividend date.
+
+        Fail-open on missing cache: if the scraper hasn't populated the cache
+        file yet, log once and allow the order. This prevents a Nasdaq or
+        Briefing outage from stranding the bot.
+        """
+        if side.upper() != "BUY":
+            return True, ""
+
+        today = datetime.now(_ET).date()
+        sym = symbol.upper()
+
+        earn_days = self._days_until_next_event(
+            sym, today, kind="earnings",
+        ) if self.config.EARNINGS_BLACKOUT_ENABLED else None
+        if earn_days is not None and earn_days <= self.config.EARNINGS_BLACKOUT_DAYS:
+            msg = (
+                f"Earnings blackout: {sym} reports in {earn_days}d "
+                f"(threshold {self.config.EARNINGS_BLACKOUT_DAYS}d)."
+            )
+            if self.config.EARNINGS_BLACKOUT_MODE == "block":
+                return False, msg
+            logger.warning("%s [warn mode — order allowed]", msg)
+
+        div_days = self._days_until_next_event(
+            sym, today, kind="dividend",
+        ) if self.config.DIVIDEND_BLACKOUT_ENABLED else None
+        if div_days is not None and div_days <= self.config.DIVIDEND_BLACKOUT_DAYS:
+            msg = (
+                f"Ex-dividend blackout: {sym} goes ex-div in {div_days}d "
+                f"(threshold {self.config.DIVIDEND_BLACKOUT_DAYS}d)."
+            )
+            if self.config.DIVIDEND_BLACKOUT_MODE == "block":
+                return False, msg
+            logger.warning("%s [warn mode — order allowed]", msg)
+
+        return True, ""
+
+    def _days_until_next_event(
+        self, symbol: str, today: date, kind: str,
+    ) -> int | None:
+        """Return days until the next scheduled `kind` event for `symbol`,
+        or None if no upcoming event is known (or the cache is missing)."""
+        index = self._get_event_index(kind)
+        if index is None:
+            return None
+        dates = index.get(symbol)
+        if not dates:
+            return None
+        future = [d for d in dates if d >= today]
+        if not future:
+            return None
+        return (min(future) - today).days
+
+    def _get_event_index(self, kind: str) -> dict[str, set[date]] | None:
+        """Load or refresh the per-symbol date index for earnings/dividends.
+
+        Returns None on missing or unreadable cache (caller fails open).
+        """
+        if kind == "earnings":
+            from schwabagent.scrapers.earnings_calendar import _cache_path
+            path = _cache_path(self.config)
+            cached_index = self._earnings_index
+            cached_mtime = self._earnings_mtime
+        elif kind == "dividend":
+            from schwabagent.scrapers.dividend_calendar import _cache_path
+            path = _cache_path(self.config)
+            cached_index = self._dividend_index
+            cached_mtime = self._dividend_mtime
+        else:
+            return None
+
+        try:
+            mtime = path.stat().st_mtime
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            logger.debug("event gate: cache stat failed for %s: %s", path, e)
+            return None
+
+        if cached_index is not None and mtime == cached_mtime:
+            return cached_index
+
+        index = self._load_event_index(path, kind)
+        if kind == "earnings":
+            self._earnings_index = index
+            self._earnings_mtime = mtime
+        else:
+            self._dividend_index = index
+            self._dividend_mtime = mtime
+        return index
+
+    @staticmethod
+    def _load_event_index(path: Path, kind: str) -> dict[str, set[date]]:
+        """Parse a scraper cache file into {symbol: set[date]}.
+
+        `earnings` rows carry a `date` field; `dividend` rows carry `ex_date`.
+        Malformed rows are silently skipped.
+        """
+        date_key = "date" if kind == "earnings" else "ex_date"
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, ValueError) as e:
+            logger.warning("event gate: failed to read %s: %s", path, e)
+            return {}
+
+        index: dict[str, set[date]] = {}
+        for row in payload.get("rows", []):
+            sym = (row.get("symbol") or "").upper()
+            iso = row.get(date_key)
+            if not sym or not iso:
+                continue
+            try:
+                d = date.fromisoformat(iso)
+            except ValueError:
+                continue
+            index.setdefault(sym, set()).add(d)
+        return index
 
     # ── Status ───────────────────────────────────────────────────────────
 

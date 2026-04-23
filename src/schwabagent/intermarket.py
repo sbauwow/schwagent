@@ -23,6 +23,32 @@ logger = logging.getLogger(__name__)
 # Default reference ETF proxies for intermarket analysis
 DEFAULT_REFERENCE_SYMBOLS = ["SPY", "TLT", "HYG", "GLD", "IWM", "UUP", "VIXY"]
 
+# CBOE Treasury yield indices (values are yield × 10)
+TREASURY_SYMBOLS = ["$TNX", "$TYX", "$FVX", "$IRX"]
+TREASURY_LABELS = {
+    "$IRX": "13-Wk",
+    "$FVX": "5-Yr",
+    "$TNX": "10-Yr",
+    "$TYX": "30-Yr",
+}
+
+# Commodity ETF proxies — one get_quotes call covers the full complex
+COMMODITY_SYMBOLS = ["USO", "GLD", "SLV", "CPER", "UNG", "DBC", "DBA", "WEAT", "CORN", "URA", "COPX", "LIT"]
+COMMODITY_LABELS = {
+    "USO": "Oil (WTI)",
+    "GLD": "Gold",
+    "SLV": "Silver",
+    "CPER": "Copper",
+    "UNG": "Nat Gas",
+    "DBC": "Broad Cmdty",
+    "DBA": "Agriculture",
+    "WEAT": "Wheat",
+    "CORN": "Corn",
+    "URA": "Uranium",
+    "COPX": "Copper Miners",
+    "LIT": "Lithium",
+}
+
 
 # ── Regime Enum ────────────────────────────────────────────────────────────────
 
@@ -325,6 +351,29 @@ class RegimeModel:
         sig = 1 if price > sma50 else -1
         return RegimeSignal(name="Dollar (UUP)", value=round(price - sma50, 2), signal=sig, weight=1.0)
 
+    def _compute_yield_curve(self, quotes: dict, histories: dict | None) -> RegimeSignal:
+        """Treasury yield curve slope (10Y - 13Wk).
+
+        Uses $TNX (10-year) and $IRX (13-week) CBOE indices. Values are
+        yield × 10, so divide by 10 to get percent. Positive spread =
+        normal curve (+1), negative = inverted (-1), near-zero = flat (0).
+        """
+        tnx = self._get_price(quotes, "$TNX")
+        irx = self._get_price(quotes, "$IRX")
+        if tnx is None or irx is None:
+            return RegimeSignal(name="Yield Curve (10Y-13W)", value=0.0, signal=0, weight=1.0)
+
+        # Convert from ×10 to actual yield percentage
+        spread = (tnx - irx) / 10.0  # in percentage points
+
+        if spread > 0.25:
+            sig = 1   # normal — healthy
+        elif spread < -0.25:
+            sig = -1  # inverted — recession warning
+        else:
+            sig = 0   # flat — ambiguous
+        return RegimeSignal(name="Yield Curve (10Y-13W)", value=round(spread, 3), signal=sig, weight=1.0)
+
     def _compute_volatility(self, quotes: dict, histories: dict | None) -> RegimeSignal:
         """VIX proxy (VIXY) level — below 20 = +1, 20-30 = 0, above 30 = -1.
 
@@ -419,7 +468,7 @@ class RegimeModel:
                 composite_score=0,
             )
 
-        # Compute all 7 signals
+        # Compute all 8 signals
         signals = [
             self._compute_spy_trend(quotes, price_histories),
             self._compute_spy_momentum(quotes, price_histories),
@@ -427,6 +476,7 @@ class RegimeModel:
             self._compute_safe_haven(quotes, price_histories),
             self._compute_breadth(quotes, price_histories),
             self._compute_dollar(quotes, price_histories),
+            self._compute_yield_curve(quotes, price_histories),
             self._compute_volatility(quotes, price_histories),
         ]
 
@@ -515,3 +565,100 @@ def regime_sizing_factor(regime: Regime, strategy_name: str) -> float:
 def display_regime(result: RegimeResult) -> None:
     """Module-level convenience for RegimeModel.display_regime()."""
     RegimeModel.display_regime(result)
+
+
+def get_yield_curve(quotes: dict) -> dict | None:
+    """Extract Treasury yields from quotes and compute curve metrics.
+
+    Args:
+        quotes: dict of symbol -> Quote (must include $TNX, $TYX, $FVX, $IRX).
+
+    Returns:
+        Dict with individual yields, spreads, and curve shape label, or None
+        if no Treasury quotes are available.
+    """
+    def _yield(sym: str) -> float | None:
+        q = quotes.get(sym)
+        if q is None:
+            return None
+        if isinstance(q, dict):
+            val = q.get("lastPrice") or q.get("last_price") or q.get("last") or q.get("mark")
+        else:
+            val = getattr(q, "last", None) or getattr(q, "lastPrice", None)
+        if val is None or val == 0:
+            return None
+        return round(val / 10.0, 3)  # CBOE convention: value × 10
+
+    irx = _yield("$IRX")   # 13-week
+    fvx = _yield("$FVX")   # 5-year
+    tnx = _yield("$TNX")   # 10-year
+    tyx = _yield("$TYX")   # 30-year
+
+    if all(v is None for v in (irx, fvx, tnx, tyx)):
+        return None
+
+    # Spreads
+    spread_2s10s = round(tnx - irx, 3) if tnx is not None and irx is not None else None
+    spread_10s30s = round(tyx - tnx, 3) if tyx is not None and tnx is not None else None
+    spread_full = round(tyx - irx, 3) if tyx is not None and irx is not None else None
+
+    # Shape classification
+    if spread_2s10s is not None:
+        if spread_2s10s < -0.25:
+            shape = "Inverted"
+        elif spread_2s10s < 0.10:
+            shape = "Flat"
+        else:
+            shape = "Normal"
+    else:
+        shape = "Unknown"
+
+    return {
+        "irx_13w": irx,
+        "fvx_5y": fvx,
+        "tnx_10y": tnx,
+        "tyx_30y": tyx,
+        "spread_10y_13w": spread_2s10s,
+        "spread_30y_10y": spread_10s30s,
+        "spread_30y_13w": spread_full,
+        "shape": shape,
+    }
+
+
+def get_commodities(quotes: dict) -> list[dict] | None:
+    """Extract commodity ETF prices and daily changes from quotes.
+
+    Args:
+        quotes: dict of symbol -> Quote (should include COMMODITY_SYMBOLS).
+
+    Returns:
+        List of dicts sorted by absolute change descending, or None if no
+        commodity quotes are available.
+    """
+    rows: list[dict] = []
+    for sym in COMMODITY_SYMBOLS:
+        q = quotes.get(sym)
+        if q is None:
+            continue
+        if isinstance(q, dict):
+            last = q.get("lastPrice") or q.get("last_price") or q.get("last") or 0
+            change_pct = q.get("netPercentChangeInDouble") or q.get("percentChange") or q.get("change_pct") or 0
+            volume = q.get("totalVolume") or q.get("volume") or 0
+        else:
+            last = getattr(q, "last", 0) or 0
+            change_pct = getattr(q, "change_pct", 0) or 0
+            volume = getattr(q, "volume", 0) or 0
+        if last == 0:
+            continue
+        rows.append({
+            "symbol": sym,
+            "label": COMMODITY_LABELS.get(sym, sym),
+            "last": round(float(last), 2),
+            "change_pct": round(float(change_pct), 2),
+            "volume": int(volume),
+        })
+
+    if not rows:
+        return None
+    rows.sort(key=lambda r: abs(r["change_pct"]), reverse=True)
+    return rows
