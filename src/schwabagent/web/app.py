@@ -103,8 +103,6 @@ def create_app(config: Config | None = None) -> FastAPI:
                     "invested": round(a.total_value - a.cash_available, 2),
                     "positions": positions,
                     "position_count": len(positions),
-                    "round_trips": a.round_trips,
-                    "is_day_trader": a.is_day_trader,
                     "is_closing_only": a.is_closing_only,
                 })
             # Aggregate totals

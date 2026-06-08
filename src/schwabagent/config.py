@@ -228,7 +228,7 @@ class Config(BaseSettings):
     QUANT_RESEARCH_RETENTION_DAYS: int = 180
 
     # ── Account type ──────────────────────────────────────────────────
-    # "margin" or "cash" — affects PDT rule enforcement
+    # "margin" or "cash"
     ACCOUNT_TYPE: str = "margin"
 
     # ── Multi-account ────────────────────────────────────────────────

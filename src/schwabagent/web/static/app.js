@@ -153,8 +153,6 @@ async function loadDashboard() {
 function renderFlags(account) {
   const flags = [];
   if (account.is_closing_only) flags.push('<span class="flag danger">CLOSING ONLY</span>');
-  if (account.is_day_trader) flags.push('<span class="flag warn">PDT</span>');
-  if (account.round_trips > 0) flags.push(`<span class="flag ${account.round_trips >= 3 ? 'warn' : 'ok'}">${account.round_trips}/3 day trades</span>`);
   if (account.unsettled_cash > 0) flags.push(`<span class="flag warn">Unsettled: ${$(account.unsettled_cash)}</span>`);
   if (!flags.length) return '';
   return `<div class="account-flags">${flags.join('')}</div>`;

@@ -31,7 +31,7 @@ GET /trader/v1/accounts?fields=positions
 
 | Field | Type | Example | Notes |
 |-------|------|---------|-------|
-| `type` | string | `"CASH"` | `"CASH"` or `"MARGIN"` — determines PDT rule applicability |
+| `type` | string | `"CASH"` | `"CASH"` or `"MARGIN"` — account type |
 | `accountNumber` | string | `"53259297"` | Full account number |
 | `roundTrips` | int | `0` | Schwab-tracked day trades in rolling 5 business days |
 | `isDayTrader` | bool | `false` | Schwab PDT flag — set when round trips exceed limit on margin |
@@ -411,9 +411,7 @@ Each contract:
 
 | Data | Source Endpoint | Used By |
 |------|----------------|---------|
-| Account type (CASH/MARGIN) | GET /accounts | TradingRules — PDT applicability |
-| Round trips | GET /accounts | TradingRules — Schwab's day trade count |
-| isDayTrader | GET /accounts | TradingRules — PDT flag |
+| Account type (CASH/MARGIN) | GET /accounts | TradingRules — account type |
 | isClosingOnlyRestricted | GET /accounts | TradingRules — hard block on buys |
 | liquidationValue | GET /accounts | RiskManager — portfolio total, drawdown |
 | cashBalance | GET /accounts | RiskManager — available cash for orders |
