@@ -25,7 +25,7 @@ Last updated: 2026-04-13
 - **Intelligence layer (vibe-trading port):**
   - 23 reference skills with progressive disclosure (`./run.sh ref`)
   - Swarm multi-agent orchestration with 3 bundled presets (`./run.sh swarm`)
-- Risk management (PDT, wash sale, position limits, drawdown kill)
+- Risk management (wash sale, position limits, drawdown kill)
 - **Web dashboard** (FastAPI + vanilla JS) — accounts, positions, trades, P&L
 - Point & Figure charting
 - DRY_RUN=true default with per-strategy live toggles

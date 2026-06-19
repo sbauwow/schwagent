@@ -236,7 +236,6 @@ Existing 658-test suite should still pass.
 | Event blackout (earnings) | Already fires on any BUY via `trading_rules.check_order`. Covered-call entries will hit this naturally. **Decide:** do we want to *allow* the entry pre-earnings for IV-crush premium capture? Currently it warns; flipping to `block` would hurt the screener's main alpha source. Default: keep `warn`. |
 | Dividend blackout | Off by default. Leave off — the screener *wants* dividends in the hold window. |
 | Wash sale | Existing warning-only wash-sale rule fires on the equity BUY. Acceptable. |
-| PDT | Not a day trade unless we close same day. Covered calls held to expiry are fine on margin<25k. |
 | Position cap | `MAX_POSITION_VALUE` / `MAX_POSITION_PCT` must accommodate `100 * spot` per contract. A $300 stock = $30k per contract — too big for a $50k account under the default 10% position cap. Screener should filter opportunities by `spot <= max_position_value / 100` before ranking. Add a config knob: `COVERED_CALL_MAX_SPOT`. |
 
 ---

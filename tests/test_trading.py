@@ -71,106 +71,6 @@ def scheduler(config) -> Scheduler:
 # TradingRules tests
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestTradingRulesPDT:
-    """Pattern Day Trader rule: 4+ day trades in 5 days on margin under $25k."""
-
-    def test_pdt_not_triggered_below_limit(self, rules):
-        """3/3 round trips used but no same-day opposite trade => allowed."""
-        allowed, reason = rules.check_order(
-            symbol="AAPL", side="BUY", quantity=10, price=150.0,
-            account_value=20_000.0, account_type="MARGIN",
-            round_trips=3,
-        )
-        # No trades in history, so _would_be_day_trade returns False
-        assert allowed
-
-    def test_pdt_blocks_at_limit_with_day_trade(self, rules, state):
-        """At round_trips >= 3, a buy that would create a day trade is blocked."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        # Simulate a SELL of AAPL today (opposite side)
-        state.append_trade({
-            "symbol": "AAPL", "side": "SELL", "quantity": 10, "price": 150.0,
-            "timestamp": f"{today}T10:00:00+00:00",
-        })
-        allowed, reason = rules.check_order(
-            symbol="AAPL", side="BUY", quantity=10, price=150.0,
-            account_value=20_000.0, account_type="MARGIN",
-            round_trips=3,
-        )
-        assert not allowed
-        assert "PDT" in reason
-
-    def test_pdt_blocks_at_4_round_trips(self, rules, state):
-        """round_trips=4 with same-day opposite trade => blocked."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        state.append_trade({
-            "symbol": "TSLA", "side": "BUY", "quantity": 5, "price": 200.0,
-            "timestamp": f"{today}T09:30:00+00:00",
-        })
-        allowed, reason = rules.check_order(
-            symbol="TSLA", side="SELL", quantity=5, price=210.0,
-            account_value=20_000.0, account_type="MARGIN",
-            round_trips=4,
-        )
-        assert not allowed
-        assert "PDT" in reason
-
-    def test_pdt_not_applicable_above_25k(self, rules, state):
-        """Margin account with $25k+ equity is exempt from PDT."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        state.append_trade({
-            "symbol": "AAPL", "side": "SELL", "quantity": 10, "price": 150.0,
-            "timestamp": f"{today}T10:00:00+00:00",
-        })
-        allowed, reason = rules.check_order(
-            symbol="AAPL", side="BUY", quantity=10, price=150.0,
-            account_value=30_000.0, account_type="MARGIN",
-            round_trips=5,
-        )
-        assert allowed
-
-    def test_pdt_allows_non_day_trade(self, rules, state):
-        """At limit, but buying a symbol NOT sold today => allowed."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        state.append_trade({
-            "symbol": "MSFT", "side": "SELL", "quantity": 5, "price": 300.0,
-            "timestamp": f"{today}T10:00:00+00:00",
-        })
-        # Buying AAPL (no opposite SELL today for AAPL)
-        allowed, reason = rules.check_order(
-            symbol="AAPL", side="BUY", quantity=10, price=150.0,
-            account_value=20_000.0, account_type="MARGIN",
-            round_trips=3,
-        )
-        assert allowed
-
-
-class TestTradingRulesCashAccount:
-    """PDT does not apply to cash accounts."""
-
-    def test_cash_account_exempt_from_pdt(self, rules, state):
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        state.append_trade({
-            "symbol": "AAPL", "side": "SELL", "quantity": 10, "price": 150.0,
-            "timestamp": f"{today}T10:00:00+00:00",
-        })
-        allowed, reason = rules.check_order(
-            symbol="AAPL", side="BUY", quantity=10, price=150.0,
-            account_value=5_000.0, account_type="CASH",
-            round_trips=10,
-        )
-        assert allowed
-
-    def test_cash_account_default(self, rules):
-        """Default account_type is CASH, so PDT should not apply."""
-        allowed, reason = rules.check_order(
-            symbol="AAPL", side="BUY", quantity=10, price=150.0,
-            account_value=5_000.0,
-            round_trips=5,
-        )
-        assert allowed
-
-
 class TestTradingRulesClosingOnly:
     """Closing-only restriction blocks new buys."""
 
@@ -284,23 +184,17 @@ class TestTradingRulesCheckOrder:
         assert allowed
         assert reason == ""
 
-    def test_closing_only_checked_first(self, rules, state):
-        """Closing-only is checked before PDT."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        state.append_trade({
-            "symbol": "AAPL", "side": "SELL", "quantity": 10, "price": 150.0,
-            "timestamp": f"{today}T10:00:00+00:00",
-        })
+    def test_closing_only_blocks_buy_on_margin(self, rules):
+        """Closing-only blocks a new buy regardless of account size."""
         allowed, reason = rules.check_order(
             symbol="AAPL", side="BUY", quantity=10, price=150.0,
-            account_value=20_000.0, account_type="MARGIN",
-            round_trips=5, is_closing_only=True,
+            account_value=20_000.0, is_closing_only=True,
         )
         assert not allowed
         assert "closing-only" in reason.lower()
 
-    def test_sell_always_allowed_no_pdt_restriction(self, rules):
-        """SELL with closing-only=False should pass regardless of PDT params."""
+    def test_sell_always_allowed(self, rules):
+        """SELL with closing-only=False should pass."""
         allowed, reason = rules.check_order(
             symbol="AAPL", side="SELL", quantity=10, price=150.0,
             account_value=50_000.0,
@@ -443,35 +337,14 @@ class TestTradingRulesEventBlackout:
 class TestTradingRulesStatus:
     """status() returns a summary dict."""
 
-    def test_status_margin_under_25k(self, rules):
-        s = rules.status(
-            account_value=20_000.0, account_type="MARGIN",
-            round_trips=2, is_day_trader=False, is_closing_only=False,
-        )
-        assert s["pdt_applies"] is True
-        assert s["round_trips"] == 2
-        assert s["round_trips_limit"] == 3
-        assert s["round_trips_remaining"] == 1
+    def test_status_reports_account_type(self, rules):
+        s = rules.status(account_value=20_000.0, account_type="MARGIN")
         assert s["account_type"] == "MARGIN"
         assert s["is_closing_only"] is False
-
-    def test_status_margin_above_25k(self, rules):
-        s = rules.status(account_value=30_000.0, account_type="MARGIN")
-        assert s["pdt_applies"] is False
-        assert s["round_trips_limit"] is None
-        assert s["round_trips_remaining"] is None
-
-    def test_status_cash_account(self, rules):
-        s = rules.status(account_value=5_000.0, account_type="CASH")
-        assert s["pdt_applies"] is False
 
     def test_status_closing_only_flag(self, rules):
         s = rules.status(account_value=50_000.0, is_closing_only=True)
         assert s["is_closing_only"] is True
-
-    def test_status_has_pdt_threshold(self, rules):
-        s = rules.status(account_value=10_000.0, account_type="MARGIN")
-        assert s["pdt_threshold"] == 25_000.0
 
 
 # ══════════════════════════════════════════════════════════════════════════════

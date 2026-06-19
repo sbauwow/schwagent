@@ -131,7 +131,7 @@ A FastAPI + vanilla-JS dashboard for real-time account and portfolio visibility.
 ```
 
 Four tabs:
-- **Dashboard** — KPI cards (total value, cash, invested, kill switch, peak, mode), per-account cards with PDT/closing-only/unsettled flags, stacked portfolio allocation bar.
+- **Dashboard** — KPI cards (total value, cash, invested, kill switch, peak, mode), per-account cards with closing-only/unsettled flags, stacked portfolio allocation bar.
 - **Positions** — all positions across all linked accounts, sorted by market value.
 - **Trades** — recent trade history from `trade_history.jsonl`.
 - **P&L** — per-strategy P&L with win rates, total realized P&L, and trade counts.
@@ -263,11 +263,10 @@ Brokerage constraints are auto-enforced using data from the Schwab API:
 
 | Rule | Source | Behavior |
 |------|--------|----------|
-| **PDT** (Pattern Day Trader) | `securitiesAccount.roundTrips`, `isDayTrader` | Blocks day trade #4 on margin accounts < $25k |
 | **Closing-only** | `isClosingOnlyRestricted` | Blocks all new BUY orders |
 | **Wash sale** | Trade history (30-day lookback) | Warns but allows (tax implication only) |
 
-Account type (`CASH` / `MARGIN`) is auto-detected from the API. PDT does not apply to cash accounts.
+Account type (`CASH` / `MARGIN`) is auto-detected from the API and shown in status/dashboard.
 
 ---
 
@@ -780,7 +779,7 @@ src/schwabagent/
   schwab_client.py       Schwab API wrapper (dual client: account + market)
   runner.py              Main orchestrator (scan → execute loop)
   risk.py                Risk management + trading rules integration
-  trading_rules.py       Brokerage rules engine (PDT, wash sale, closing-only)
+  trading_rules.py       Brokerage rules engine (wash sale, closing-only, event blackout)
   persistence.py         JSON/JSONL state storage
   indicators.py          Technical indicators (SMA, EMA, RSI, MACD, etc.)
   telegram.py            Telegram bot (alerts, commands, trade approval)

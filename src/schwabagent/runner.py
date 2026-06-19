@@ -402,8 +402,6 @@ class AgentRunner:
             tr = st.get("trading_rules", {})
             if tr:
                 lines.append(f"Account type: <code>{_e(tr.get('account_type', '?'))}</code>")
-                if "day_trades_remaining" in tr:
-                    lines.append(f"Day trades left: {tr['day_trades_remaining']}")
             return "\n".join(lines)
 
         def _recent(args):
@@ -1038,7 +1036,7 @@ class AgentRunner:
 
             ceiling_dollars = min(by_max_order, by_max_position, by_pct_port, by_cash, by_exposure)
             max_qty = int(ceiling_dollars // price) if price > 0 else 0
-            # Run the real risk check on that size to catch PDT / closing-only / etc.
+            # Run the real risk check on that size to catch closing-only / etc.
             ok, reason = self.risk.can_buy(symbol, max(1, max_qty), price, account)
 
             lines = [
@@ -2380,14 +2378,6 @@ class AgentRunner:
         self.console.print(f"  [bold]Account:[/bold] type={acct_type}")
         if tr.get("is_closing_only"):
             self.console.print("  [red bold]CLOSING ONLY — new buys blocked by Schwab[/red bold]")
-        if tr.get("pdt_applies"):
-            remaining = tr.get("round_trips_remaining", "?")
-            used = tr.get("round_trips", 0)
-            color = "red" if remaining == 0 else "yellow" if remaining == 1 else "green"
-            self.console.print(
-                f"  [bold]PDT:[/bold] [{color}]{used}/3 day trades used[/{color}] "
-                f"({remaining} remaining — from Schwab roundTrips)"
-            )
 
         table = Table(title="Strategy Session Stats", show_lines=False)
         table.add_column("Strategy", style="cyan")

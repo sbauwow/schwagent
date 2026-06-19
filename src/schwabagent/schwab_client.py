@@ -77,8 +77,6 @@ class AccountSummary:
     positions: list[Position] = field(default_factory=list)
     # Account metadata from Schwab API
     account_type: str = ""          # "CASH" or "MARGIN"
-    round_trips: int = 0            # day trades in rolling 5-day window (Schwab-tracked)
-    is_day_trader: bool = False     # PDT flag set by Schwab
     is_closing_only: bool = False   # account restricted to closing orders only
     unsettled_cash: float = 0.0     # cash not yet settled (T+1)
 
@@ -448,8 +446,6 @@ class SchwabClient:
                 cash_available=cash,
                 positions=positions,
                 account_type=acct.get("type", ""),
-                round_trips=int(acct.get("roundTrips", 0)),
-                is_day_trader=bool(acct.get("isDayTrader", False)),
                 is_closing_only=bool(acct.get("isClosingOnlyRestricted", False)),
                 unsettled_cash=unsettled,
             )
