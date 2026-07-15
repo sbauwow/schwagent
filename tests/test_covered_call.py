@@ -143,13 +143,16 @@ class TestScanPipeline:
 
     def test_happy_path_returns_ranked_candidate(self, tmp_dir, screener):
         """A clean setup yields one candidate with sensible metrics."""
-        _write_div_cache(tmp_dir, "KO", annual=1.92, ex_date="2026-05-15", amount=0.48)
+        # Dates relative to today so the hold-window check never goes stale.
+        exp = (date.today() + timedelta(days=35)).isoformat()
+        ex = (date.today() + timedelta(days=20)).isoformat()  # inside [today, exp]
+        _write_div_cache(tmp_dir, "KO", annual=1.92, ex_date=ex, amount=0.48)
         screener.client.get_quotes.return_value = {"KO": _mock_quote()}
         # Chain around spot=60, target strike = 60 * 1.05 = 63
         screener.client.get_option_chain.return_value = [
-            _contract(62.5, "2026-05-20", 35, bid=1.40, ask=1.50),
-            _contract(63.0, "2026-05-20", 35, bid=1.10, ask=1.20),  # closest to 63
-            _contract(65.0, "2026-05-20", 35, bid=0.50, ask=0.60),
+            _contract(62.5, exp, 35, bid=1.40, ask=1.50),
+            _contract(63.0, exp, 35, bid=1.10, ask=1.20),  # closest to 63
+            _contract(65.0, exp, 35, bid=0.50, ask=0.60),
         ]
 
         opps = screener.scan()
@@ -164,7 +167,7 @@ class TestScanPipeline:
         assert row["if_called_yield_pct"] == pytest.approx(72.13, rel=1e-3)
         # dividend_yield_pct = 1.92 / 60 * 100 = 3.2%
         assert row["dividend_yield_pct"] == pytest.approx(3.2, rel=1e-3)
-        # ex_date 2026-05-15 lands inside hold window (today → 2026-05-20)
+        # ex-date lands inside the hold window (today → expiration)
         assert row["dividend_in_hold"] is True
         # downside protection = 1.15 / 60 = 1.9167% (stored rounded to 2 dp)
         assert row["downside_protection_pct"] == pytest.approx(1.92, abs=0.01)
