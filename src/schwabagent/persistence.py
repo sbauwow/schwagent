@@ -24,6 +24,8 @@ class StateStore:
         self._history_path = self.state_dir / "trade_history.jsonl"
         self._strategy_pnl_path = self.state_dir / "strategy_pnl.json"
         self._audit_path = self.state_dir / "audit.jsonl"
+        self._signal_state_path = self.state_dir / "signal_state.json"
+        self._signal_events_path = self.state_dir / "signal_events.jsonl"
 
     # ── Risk state ────────────────────────────────────────────────────────────
 
@@ -106,6 +108,39 @@ class StateStore:
         except OSError:
             pass
         return entries[-limit:]
+
+    # ── Signaler state (last signal + alert events per strategy:symbol) ──────
+
+    def get_signal_state(self) -> dict:
+        """Load last-known signal per "strategy:symbol" key."""
+        return self._read_json(self._signal_state_path) or {}
+
+    def save_signal_state(self, state: dict) -> None:
+        """Overwrite signal state file atomically."""
+        self._write_json(self._signal_state_path, state)
+
+    def append_signal_event(self, event: dict) -> None:
+        """Append one signal-change alert event."""
+        self._append_jsonl(self._signal_events_path, event)
+
+    def get_signal_events(self, limit: int = 50) -> list[dict]:
+        """Return the most recent signal-change events."""
+        if not self._signal_events_path.exists():
+            return []
+        events: list[dict] = []
+        try:
+            for line in self._signal_events_path.read_text().strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        except OSError as e:
+            logger.warning("Failed to read signal events: %s", e)
+            return []
+        return events[-limit:]
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

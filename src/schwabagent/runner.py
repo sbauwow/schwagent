@@ -13,6 +13,7 @@ from rich.table import Table
 from schwabagent.config import Config
 from schwabagent.persistence import StateStore
 from schwabagent.risk import RiskManager
+from schwabagent.signaler import SignalNotifier
 from schwabagent.schwab_client import AccountSummary, SchwabClient
 from schwabagent.intermarket import (
     RegimeModel, regime_sizing_factor,
@@ -52,6 +53,7 @@ class AgentRunner:
         self.llm = self._init_llm()
         self.telegram = self._init_telegram()
         self.feedback = self._init_feedback()
+        self.signaler = SignalNotifier(config, self.state)
         self.strategies: list[Strategy] = self._build_strategies()
         self.regime_model = RegimeModel(config)
         self.current_regime = None
@@ -2115,6 +2117,10 @@ class AgentRunner:
 
             try:
                 trades = strategy.run_once()
+                try:
+                    self.signaler.process(strategy.name, strategy.last_scan)
+                except Exception as e:
+                    logger.error("[signaler] %s failed: %s", strategy.name, e)
                 for t in trades:
                     # Apply auto-tuner sizing adjustment
                     if tuner_state.sizing_factor < 1.0 and t.get("side") == "BUY":
@@ -2247,6 +2253,33 @@ class AgentRunner:
             self.feedback.record_batch(all_signals)
 
         return sorted(seen.values(), key=lambda o: abs(o["score"]), reverse=True)
+
+    # ── run_signaler ──────────────────────────────────────────────────────────
+
+    def run_signaler(self) -> list[dict]:
+        """Scan signaler-watched strategies and alert on signal changes.
+
+        Signal-only path: no execution, no order tracking, no risk sizing.
+        Runs even when the kill switch is active or the account API is
+        unreachable — scanning only needs market data.
+        Returns the list of alert events emitted this run.
+        """
+        self.client.new_scan_epoch()
+        try:
+            self._inject_account(self._get_account())
+        except Exception as e:
+            logger.warning("[signaler] account fetch failed (%s) — scanning without it", e)
+
+        events: list[dict] = []
+        for strategy in self.strategies:
+            if not self.signaler.is_watched(strategy.name):
+                continue
+            try:
+                opps = strategy.scan()
+                events.extend(self.signaler.process(strategy.name, opps))
+            except Exception as e:
+                logger.error("[signaler] %s scan failed: %s", strategy.name, e)
+        return events
 
     # ── run_loop ──────────────────────────────────────────────────────────────
 

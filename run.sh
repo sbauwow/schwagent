@@ -5,6 +5,7 @@
 # Usage:
 #   ./run.sh              Dry-run one scan cycle, show signals, exit
 #   ./run.sh scan         Quick scan — show signals without executing
+#   ./run.sh signals      Signaler — alert on trend signal changes (Telegram)
 #   ./run.sh once         Dry-run one full cycle (scan + execute)
 #   ./run.sh loop         Dry-run continuous (scans every 5 min)
 #   ./run.sh live         REAL MONEY — places actual orders on Schwab
@@ -176,6 +177,14 @@ cmd_scan() {
     echo -e "${CYAN}=== Scanning watchlist ===${NC}"
     echo ""
     $VENV -m schwabagent.cli --scan --dry-run
+    echo ""
+}
+
+cmd_signals() {
+    echo ""
+    echo -e "${CYAN}=== Signaler: trend signal changes ===${NC}"
+    echo ""
+    $VENV -m schwabagent.cli --signals --dry-run
     echo ""
 }
 
@@ -1109,6 +1118,7 @@ case "${1:-once}" in
     enroll)  cmd_enroll ;;
     status)  cmd_status ;;
     scan)    cmd_scan ;;
+    signals) cmd_signals ;;
     once)    cmd_once ;;
     loop)    cmd_loop ;;
     live)    cmd_live ;;
@@ -1130,11 +1140,12 @@ case "${1:-once}" in
     ref)     shift; cmd_ref "$@" ;;
     swarm)   shift; cmd_swarm "$@" ;;
     *)
-        echo "Usage: ./run.sh [enroll|status|scan|once|loop|live|pnl|pf|ta|skills|feedback|backtest|validate|autoresearch|hilo|earnings|options|optimize|dream|sec|web|ref|swarm]"
+        echo "Usage: ./run.sh [enroll|status|scan|signals|once|loop|live|pnl|pf|ta|skills|feedback|backtest|validate|autoresearch|hilo|earnings|options|optimize|dream|sec|web|ref|swarm]"
         echo ""
         echo "  enroll   Authenticate with Schwab (OAuth browser flow)"
         echo "  status   Check Schwab connectivity + agent config"
         echo "  scan     Show signals for watchlist (no execution)"
+        echo "  signals  Alert on trend signal changes via Telegram (no execution)"
         echo "  once     Dry-run one full scan+execute cycle (default)"
         echo "  loop     Dry-run continuous (scans on interval)"
         echo "  live     REAL MONEY mode — places actual orders"

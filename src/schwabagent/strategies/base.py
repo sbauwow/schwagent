@@ -50,6 +50,7 @@ class Strategy(ABC):
         self.state = state
         self.trades_executed: int = 0
         self.session_pnl: float = 0.0
+        self.last_scan: list[dict] = []
 
     @abstractmethod
     def scan(self) -> list[dict]:
@@ -80,6 +81,7 @@ class Strategy(ABC):
         except Exception as e:
             logger.error("[%s] scan() failed: %s", self.name, e)
             return []
+        self.last_scan = opportunities
 
         if not self.is_live and not self.config.DRY_RUN:
             logger.info("[%s] live trading disabled for this strategy — dry-run only", self.name)

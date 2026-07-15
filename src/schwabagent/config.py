@@ -373,6 +373,18 @@ class Config(BaseSettings):
     TELEGRAM_REQUIRE_APPROVAL: bool = True  # require approval for live trades
     TELEGRAM_APPROVAL_TIMEOUT: int = 300    # seconds to wait for approval
 
+    # ── Signaler (alerts on signal transitions, no execution) ─────────────
+    SIGNALER_ENABLED: bool = True
+    # Which strategies' scans feed the signaler — comma list of strategy
+    # names, or "all" for every enabled strategy
+    SIGNALER_STRATEGIES: str = "all"
+    # Entering an actionable signal must clear this |score| bar
+    # (BUY=1.0, STRONG_BUY=2.0); exits to HOLD always alert
+    SIGNALER_MIN_ABS_SCORE: float = 1.0
+    # Per-symbol suppression window; while cooling down the stored signal
+    # is frozen so a flap back to it never re-alerts
+    SIGNALER_COOLDOWN_MINUTES: int = 240
+
     # ── LLM (optional) ───────────────────────────────────────────────────
     LLM_ENABLED: bool = False
     # Provider: "ollama" (local), "anthropic" (Claude), "openai" (GPT/compatible)
@@ -412,6 +424,10 @@ class Config(BaseSettings):
     @property
     def regime_reference_symbols(self) -> list[str]:
         return [s.strip().upper() for s in self.REGIME_REFERENCE_SYMBOLS.split(",") if s.strip()]
+
+    @property
+    def signaler_strategies(self) -> list[str]:
+        return [s.strip().lower() for s in self.SIGNALER_STRATEGIES.split(",") if s.strip()]
 
     @property
     def all_symbols(self) -> list[str]:

@@ -95,6 +95,7 @@ Notes:
 | `./run.sh enroll` | Authenticate with Schwab (OAuth browser flow) |
 | `./run.sh status` | Check connectivity, config, balances, per-strategy live flags |
 | `./run.sh scan` | Scan watchlist + ETF universe, show signals — no trades |
+| `./run.sh signals` | Signaler — Telegram alert when a watched strategy's signal changes; no execution |
 | `./run.sh once` | Dry-run one full scan + execute cycle |
 | `./run.sh loop` | Dry-run continuous loop (interval from `.env`) |
 | `./run.sh live` | **Live trading** — real orders, requires confirmation |
