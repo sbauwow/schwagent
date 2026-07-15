@@ -184,12 +184,11 @@ class TestTradingRulesCheckOrder:
         assert allowed
         assert reason == ""
 
-    def test_closing_only_blocks_margin_buy(self, rules):
-        """Closing-only blocks a new BUY even on a margin account."""
+    def test_closing_only_blocks_buy_on_margin(self, rules):
+        """Closing-only blocks a new buy regardless of account size."""
         allowed, reason = rules.check_order(
             symbol="AAPL", side="BUY", quantity=10, price=150.0,
-            account_value=20_000.0, account_type="MARGIN",
-            is_closing_only=True,
+            account_value=20_000.0, is_closing_only=True,
         )
         assert not allowed
         assert "closing-only" in reason.lower()
@@ -338,10 +337,8 @@ class TestTradingRulesEventBlackout:
 class TestTradingRulesStatus:
     """status() returns a summary dict."""
 
-    def test_status_account_type(self, rules):
-        s = rules.status(
-            account_value=20_000.0, account_type="MARGIN", is_closing_only=False,
-        )
+    def test_status_reports_account_type(self, rules):
+        s = rules.status(account_value=20_000.0, account_type="MARGIN")
         assert s["account_type"] == "MARGIN"
         assert s["is_closing_only"] is False
 

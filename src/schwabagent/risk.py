@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class RiskManager:
     """Enforces per-position limits, total exposure cap, drawdown kill switch,
-    and brokerage trading rules (wash sale, etc.)."""
+    and brokerage trading rules (wash sale, closing-only, etc.)."""
 
     def __init__(self, config: Config, state: StateStore):
         self.config = config
@@ -137,7 +137,6 @@ class RiskManager:
             quantity=quantity,
             price=price,
             account_value=account.total_value,
-            account_type=account.account_type or self.config.ACCOUNT_TYPE,
             is_closing_only=account.is_closing_only,
         )
         if not allowed:
@@ -166,7 +165,6 @@ class RiskManager:
             quantity=quantity,
             price=price,
             account_value=account.total_value,
-            account_type=account.account_type or self.config.ACCOUNT_TYPE,
             is_closing_only=account.is_closing_only,
         )
         if not allowed:

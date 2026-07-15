@@ -49,7 +49,6 @@ class TradingRules:
         quantity: int,
         price: float,
         account_value: float,
-        account_type: str = "CASH",
         is_closing_only: bool = False,
     ) -> tuple[bool, str]:
         """Run all trading rules against a proposed order.
