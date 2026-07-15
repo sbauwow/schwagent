@@ -309,8 +309,13 @@ class TelegramBot:
 
     # ── Public API: send alerts ──────────────────────────────────────────
 
-    def send_alert(self, message: str, parse_mode: str = "MarkdownV2") -> None:
-        """Send a message to the configured chat. Thread-safe."""
+    def send_alert(self, message: str, parse_mode: str = "MarkdownV2", wait: float = 0.0) -> None:
+        """Send a message to the configured chat. Thread-safe.
+
+        wait: if > 0, block up to `wait` seconds for delivery (use when
+        the calling process is about to exit, otherwise the async send
+        loses to interpreter shutdown).
+        """
         if not self.config.TELEGRAM_ENABLED or not self._loop or not self._app:
             return
         chat_id = self.config.TELEGRAM_CHAT_ID
@@ -327,7 +332,12 @@ class TelegramBot:
             except Exception as e:
                 logger.error("Telegram send_alert failed: %s", e)
 
-        asyncio.run_coroutine_threadsafe(_send(), self._loop)
+        fut = asyncio.run_coroutine_threadsafe(_send(), self._loop)
+        if wait > 0:
+            try:
+                fut.result(timeout=wait)
+            except Exception as e:
+                logger.warning("Telegram send_alert wait timed out: %s", e)
 
     def send_trade_alert(self, trade: dict) -> None:
         """Send a formatted trade execution alert."""
@@ -384,6 +394,37 @@ class TelegramBot:
     def send_error(self, error: str) -> None:
         """Alert on agent errors."""
         self.send_alert(f"*Agent Error*\n\n`{_escape_md(error[:500])}`")
+
+    def send_cycle_summary(self, result, top_paper=None) -> None:
+        """One-line-per-metric summary fired after every dream cycle."""
+        ok = len(result.phases_completed)
+        failed = len(result.phases_failed)
+        dur = _escape_md(f"{result.duration_seconds:.1f}s")
+        lines = [
+            f"*Dream Cycle · {ok}/{ok + failed} ok · {dur}*",
+            f"`signals      ` {result.signals_recorded}",
+            f"`drift alerts ` {result.drift_alerts}",
+            f"`tune actions ` {result.auto_tune_actions}",
+            f"`mismatches   ` {result.position_mismatches}",
+            f"`papers fetched` {result.quant_papers_fetched}",
+        ]
+        if failed:
+            lines.append(f"`FAILED       ` {_escape_md(','.join(result.phases_failed))}")
+
+        if top_paper is not None:
+            title = _escape_md((getattr(top_paper, "title", "") or "")[:120])
+            url = getattr(top_paper, "url", "") or ""
+            score = _escape_md(f"{float(getattr(top_paper, 'relevance_score', 0.0) or 0.0):.1f}")
+            src = _escape_md(getattr(top_paper, "source", "?"))
+            lines.append("")
+            lines.append(f"*Top paper* \\[{src}\\] score\\={score}")
+            lines.append(f"[{title}]({_escape_md(url)})")
+
+        if result.errors:
+            lines.append("")
+            lines.append(f"_{_escape_md(result.errors[0][:200])}_")
+
+        self.send_alert("\n".join(lines), wait=10.0)
 
     def send_quant_papers(self, papers: list) -> None:
         """Send a digest of top-scoring quant research papers.

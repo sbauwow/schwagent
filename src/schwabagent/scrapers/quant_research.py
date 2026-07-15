@@ -8,10 +8,9 @@ per cycle and forwards the top-scoring new items to Telegram.
 
 Sources (all public, no auth):
   - arXiv q-fin (CP + TR + ST categories) — arxiv.org export API (Atom)
-  - SSRN FEN (Financial Economics Network) — SSRN RSS
-  - Papers With Backtests — paperswithbacktest.com/feed
   - Alpha Architect — alphaarchitect.com/feed/
-  - Hudson & Thames — hudsonthames.com/feed/
+  - Quantocracy — feeds.feedburner.com/Quantocracy
+  - Robot Wealth — robotwealth.com/feed/
 
 Each feed is best-effort: a fetch or parse failure is logged and the
 other sources continue. Parsed rows land in
@@ -265,10 +264,9 @@ def _fetch_rss(url: str, source: str, max_results: int) -> list[PaperRow]:
 _FEEDS: dict[str, tuple[str, str]] = {
     # source_key -> (url, pretty_name)
     "arxiv":             ("__arxiv__", "arXiv q-fin"),
-    "ssrn":              ("https://papers.ssrn.com/sol3/JELJOUR_Results.cfm?form_name=journalBrowse&journal_id=203&Network=no&lim=false&rss=1", "SSRN FEN"),
-    "paperswithbacktest":("https://paperswithbacktest.com/rss.xml", "Papers With Backtests"),
     "alpha_architect":   ("https://alphaarchitect.com/feed/", "Alpha Architect"),
-    "hudsonthames":      ("https://hudsonthames.com/feed/", "Hudson & Thames"),
+    "quantocracy":       ("http://feeds.feedburner.com/Quantocracy", "Quantocracy"),
+    "robotwealth":       ("https://robotwealth.com/feed/", "Robot Wealth"),
 }
 
 

@@ -1659,8 +1659,29 @@ wheels = [
 ]
 
 [[package]]
+name = "schwab-py"
+version = "1.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "authlib" },
+    { name = "autopep8" },
+    { name = "certifi" },
+    { name = "flask" },
+    { name = "httpx" },
+    { name = "multiprocess" },
+    { name = "psutil" },
+    { name = "python-dateutil" },
+    { name = "urllib3" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7b/48/9ba35979ce0ecf864030570e9a4408ad3966238e020f6756677dabdae198/schwab_py-1.5.1.tar.gz", hash = "sha256:6dce4bf671f0c3a74bf8486d114d3283261e125921fcc9abe9c25ff09e9116b0", size = 93794, upload-time = "2025-06-30T15:07:56.788Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/12/1fa990269b7e4d3e31f589bf5029834eda8159f70996ebad6e650696d570/schwab_py-1.5.1-py2.py3-none-any.whl", hash = "sha256:96e44f9ffaab364978d6a69db52c47d2599e451b638159f998165fa07d00515e", size = 100577, upload-time = "2025-06-30T15:07:55.462Z" },
+]
+
+[[package]]
 name = "schwagent"
-version = "0.1.0"
+version = "0.2.0"
 source = { virtual = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -1717,27 +1738,6 @@ requires-dist = [
 dev = [
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = ">=0.4.0" },
-]
-
-[[package]]
-name = "schwab-py"
-version = "1.5.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "authlib" },
-    { name = "autopep8" },
-    { name = "certifi" },
-    { name = "flask" },
-    { name = "httpx" },
-    { name = "multiprocess" },
-    { name = "psutil" },
-    { name = "python-dateutil" },
-    { name = "urllib3" },
-    { name = "websockets" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/7b/48/9ba35979ce0ecf864030570e9a4408ad3966238e020f6756677dabdae198/schwab_py-1.5.1.tar.gz", hash = "sha256:6dce4bf671f0c3a74bf8486d114d3283261e125921fcc9abe9c25ff09e9116b0", size = 93794, upload-time = "2025-06-30T15:07:56.788Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/81/12/1fa990269b7e4d3e31f589bf5029834eda8159f70996ebad6e650696d570/schwab_py-1.5.1-py2.py3-none-any.whl", hash = "sha256:96e44f9ffaab364978d6a69db52c47d2599e451b638159f998165fa07d00515e", size = 100577, upload-time = "2025-06-30T15:07:55.462Z" },
 ]
 
 [[package]]

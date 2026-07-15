@@ -81,10 +81,14 @@ class Scheduler:
         with self._lock:
             existing = self._jobs.get(name)
             if existing:
+                schedule_changed = existing.schedule != schedule
                 existing.schedule = schedule
                 existing.callback = callback
                 existing.enabled = enabled
                 existing.one_shot = one_shot
+                if schedule_changed:
+                    # Recompute under lock to avoid races; release for log/save below.
+                    existing.next_run = self._compute_next_run(schedule)
             else:
                 job = Job(
                     name=name,
@@ -300,11 +304,16 @@ class Scheduler:
 
         Call this after the runner is initialized to wire up all default jobs.
         """
+        dream_schedule = getattr(self._config, "DREAMCYCLE_SCHEDULE", "0 16 * * 1-5")
+
         if not _HAS_CRONITER:
             logger.warning("croniter not installed — using interval schedules instead of cron")
             self.add_job("scan", "every 5m", runner.scan_only)
             self.add_job("execute", "every 5m", runner.run_once)
-            self.add_job("dreamcycle", "every 30m", runner.dreamcycle.run_once)
+            # A cron-style DREAMCYCLE_SCHEDULE can't be parsed here, so fall
+            # back to "every 4h" unless the user already gave an interval.
+            fallback = dream_schedule if dream_schedule.startswith("every ") else "every 4h"
+            self.add_job("dreamcycle", fallback, runner.dreamcycle.run_once)
             return
 
         # Weekday schedule (Mon-Fri)
@@ -312,6 +321,6 @@ class Scheduler:
         self.add_job("execute_cycle", "40 9 * * 1-5", runner.run_once)
         self.add_job("midday_scan", "0 12 * * 1-5", runner.scan_only)
         self.add_job("etf_rotation", "0 15 * * 1-5", runner.run_once)
-        self.add_job("dreamcycle", "0 16 * * 1-5", runner.dreamcycle.run_once)
+        self.add_job("dreamcycle", dream_schedule, runner.dreamcycle.run_once)
 
-        logger.info("Default trading schedule configured")
+        logger.info("Default trading schedule configured (dreamcycle: %s)", dream_schedule)

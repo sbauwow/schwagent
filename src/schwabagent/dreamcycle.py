@@ -117,6 +117,23 @@ class DreamCycle:
             self._cycle_count, result.duration_seconds,
             len(result.phases_completed), len(result.phases_failed),
         )
+
+        # Per-cycle Telegram summary (best-effort).
+        runner = self._runner
+        if runner.telegram:
+            top_paper = None
+            try:
+                if getattr(self._config, "QUANT_RESEARCH_ENABLED", False):
+                    from schwabagent.scrapers import quant_research as qr
+                    rows = qr.top_unread(self._config, limit=1, min_score=0.0)
+                    top_paper = rows[0] if rows else None
+            except Exception as e:
+                logger.debug("[dreamcycle] top_paper lookup failed: %s", e)
+            try:
+                runner.telegram.send_cycle_summary(result, top_paper=top_paper)
+            except Exception as e:
+                logger.warning("[dreamcycle] cycle summary send failed: %s", e)
+
         return result
 
     def _loop(self, interval_minutes: int) -> None:
@@ -274,9 +291,12 @@ class DreamCycle:
             from schwabagent.telegram import _escape_md
             lines = ["*Position Reconciliation Alert*\n"]
             for m in mismatches:
+                exp = _escape_md(f"{m['expected']:.1f}")
+                act = _escape_md(f"{m['actual']:.1f}")
+                dlt = _escape_md(f"{m['delta']:+.1f}")
                 lines.append(
-                    f"`{_escape_md(m['symbol'])}` expected={m['expected']:.1f} "
-                    f"actual={m['actual']:.1f} delta={m['delta']:+.1f}"
+                    f"`{_escape_md(m['symbol'])}` expected\\={exp} "
+                    f"actual\\={act} delta\\={dlt}"
                 )
             runner.telegram.send_alert("\n".join(lines))
 
