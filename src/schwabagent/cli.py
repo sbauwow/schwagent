@@ -20,6 +20,8 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", default=False, help="Force dry-run mode")
     parser.add_argument("--once", action="store_true", help="Run one scan+execute cycle and exit")
     parser.add_argument("--scan", action="store_true", help="Scan only — show signals, no execution")
+    parser.add_argument("--signals", action="store_true",
+                        help="Signaler — scan watched strategies, alert on signal changes, no execution")
     parser.add_argument("--interval", type=int, default=None, help="Loop interval in seconds")
     parser.add_argument("--account", type=str, default=None, help="Schwab account hash override")
     parser.add_argument("--strategies", type=str, default=None, help="Comma-separated strategies to run")
@@ -53,6 +55,9 @@ def main() -> None:
         format="%(asctime)s %(name)-24s %(levelname)-8s %(message)s",
         datefmt="%H:%M:%S",
     )
+    # httpx logs full request URLs at INFO — Telegram bot API URLs embed the
+    # bot token, so those lines leak credentials into the log file.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     # Validate config
     errors = config.validate()
@@ -110,6 +115,13 @@ def main() -> None:
     if args.scan:
         opps = runner.scan_only()
         _print_opportunities(opps, console)
+        return
+
+    # ── Signaler (alerts only) ─────────────────────────────────────────────
+
+    if args.signals:
+        events = runner.run_signaler()
+        _print_signal_events(events, config, console)
         return
 
     # ── Once ───────────────────────────────────────────────────────────────
@@ -387,6 +399,37 @@ def _autoresearch_telegram_digest(config: Config, reports: list) -> None:
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     resp = requests.post(url, json={"chat_id": int(chat_id), "text": text}, timeout=10)
     resp.raise_for_status()
+
+
+def _print_signal_events(events: list[dict], config: Config, console: Console) -> None:
+    """Print signal-change events from a signaler run."""
+    watched = ", ".join(config.signaler_strategies)
+    if not events:
+        console.print(f"  No signal changes ({watched}).")
+        return
+
+    table = Table(title=f"Signal Changes ({watched})", show_lines=False)
+    table.add_column("Symbol", style="bold")
+    table.add_column("Transition")
+    table.add_column("Score", justify="right")
+    table.add_column("Price", justify="right")
+    table.add_column("Reason")
+
+    for e in events:
+        score = e.get("score", 0.0)
+        color = "green" if score > 0 else ("red" if score < 0 else "dim")
+        price = e.get("price")
+        table.add_row(
+            e.get("symbol", ""),
+            f"{e.get('prev_signal', '')} → [{color}]{e.get('signal', '')}[/{color}]",
+            f"[{color}]{score:+.2f}[/{color}]",
+            f"${price:.2f}" if isinstance(price, (int, float)) and price > 0 else "—",
+            (e.get("reason", "") or "")[:60],
+        )
+
+    console.print(table)
+    if config.TELEGRAM_ENABLED:
+        console.print(f"  [green]✓[/green] {len(events)} alert(s) pushed to Telegram")
 
 
 def _print_opportunities(opps: list[dict], console: Console) -> None:
