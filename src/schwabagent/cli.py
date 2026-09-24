@@ -213,7 +213,7 @@ def _cmd_harvest(config: Config, console: Console) -> None:
     console.print(f"  Estimated tax saved if all are harvested: [green]${total:,.0f}[/green] "
                   f"(ST {config.TAX_RATE_SHORT:.0%}, LT {config.TAX_RATE_LONG:.0%}; "
                   "losses beyond gains offset $3k/yr of income, the rest carries forward)")
-    console.print(f"  [yellow]*[/yellow] basis rebuilt from transfers/mergers or estimated from Schwab's "
+    console.print("  [yellow]*[/yellow] basis rebuilt from transfers/mergers or estimated from Schwab's "
                   "average price — confirm lots on schwab.com first")
     console.print("  Sell with specific-lot identification (the loss lots only); Schwab defaults to FIFO.")
     for idea in ideas:
