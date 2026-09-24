@@ -29,11 +29,10 @@ CLI:
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import sqlite3
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable

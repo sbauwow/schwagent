@@ -7,7 +7,7 @@ from schwabagent.config import Config
 from schwabagent.persistence import StateStore
 from schwabagent.risk import RiskManager
 from schwabagent.schwab_client import AccountSummary, SchwabClient
-from schwabagent.strategies.base import SIGNAL_SCORE, Signal, Strategy
+from schwabagent.strategies.base import Signal, Strategy
 from schwabagent.strategies.mean_reversion import MeanReversionStrategy
 from schwabagent.strategies.momentum import MomentumStrategy
 from schwabagent.strategies.trend_following import TrendFollowingStrategy

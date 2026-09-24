@@ -17,16 +17,12 @@ Usage:
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from schwabagent.indicators import adx, bollinger_bands, ema, macd, rsi, sma
 
 logger = logging.getLogger(__name__)
 
@@ -89,14 +85,14 @@ class BacktestResult:
             f"Period: {self.config.start} → {self.config.end}",
             f"Symbols: {', '.join(self.config.symbols[:10])}{'...' if len(self.config.symbols) > 10 else ''}",
             f"Initial capital: ${self.config.initial_capital:,.0f}",
-            f"",
+            "",
             f"Total return: {self.total_return_pct:+.2f}%",
             f"CAGR: {self.cagr:+.2f}%",
             f"Sharpe: {self.sharpe:.2f}",
             f"Sortino: {self.sortino:.2f}",
             f"Max drawdown: {self.max_drawdown_pct:.2f}%",
             f"Max DD duration: {self.max_drawdown_days} days",
-            f"",
+            "",
             f"Trades: {self.total_trades}",
             f"Winners: {self.winners} ({self.win_rate:.1f}%)",
             f"Losers: {self.losers}",
@@ -104,8 +100,8 @@ class BacktestResult:
             f"Avg loss: ${self.avg_loss:,.2f}",
             f"Profit factor: {self.profit_factor:.2f}",
             f"Avg hold: {self.avg_hold_days:.1f} days",
-            f"",
-            f"Annual returns:",
+            "",
+            "Annual returns:",
         ]
         for year, ret in sorted(self.annual_returns.items()):
             lines.append(f"  {year}: {ret:+.2f}%")

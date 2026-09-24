@@ -5,7 +5,7 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -13,8 +13,8 @@ from schwabagent.config import Config
 from schwabagent.persistence import StateStore
 from schwabagent.trading_rules import TradingRules
 from schwabagent.rate_limiter import RateLimiter
-from schwabagent.scheduler import Scheduler, Job
-from schwabagent.order_tracker import OrderTracker, PendingOrder
+from schwabagent.scheduler import Scheduler
+from schwabagent.order_tracker import OrderTracker
 
 
 # ── Shared fixtures ──────────────────────────────────────────────────────────

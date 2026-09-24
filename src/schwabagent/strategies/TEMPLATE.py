@@ -80,13 +80,12 @@ from __future__ import annotations
 
 import logging
 
-import pandas as pd
 
 from schwabagent.config import Config
 from schwabagent.persistence import StateStore
 from schwabagent.risk import RiskManager
 from schwabagent.schwab_client import AccountSummary, SchwabClient
-from schwabagent.strategies.base import SIGNAL_SCORE, Signal, Strategy
+from schwabagent.strategies.base import Signal, Strategy
 
 logger = logging.getLogger(__name__)
 

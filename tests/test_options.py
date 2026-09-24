@@ -8,7 +8,6 @@ import pytest
 
 from schwabagent.options import (
     Leg,
-    bear_call_spread,
     bear_put_spread,
     bs_price_and_greeks,
     bull_call_spread,
@@ -18,7 +17,6 @@ from schwabagent.options import (
     iron_condor,
     long_butterfly,
     long_call,
-    long_put,
     long_straddle,
     long_strangle,
     payoff_curve,

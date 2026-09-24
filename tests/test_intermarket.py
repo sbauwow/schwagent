@@ -1,18 +1,11 @@
 """Tests for intermarket regime detection model."""
 from __future__ import annotations
 
-import json
-import math
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pandas as pd
-import numpy as np
-import pytest
 
 from schwabagent.config import Config
 from schwabagent.intermarket import (
-    DEFAULT_REFERENCE_SYMBOLS,
     Regime,
     RegimeModel,
     RegimeResult,
@@ -336,8 +329,8 @@ class TestFullDetection:
     def test_regime_change_detection(self):
         """Should detect regime change across calls."""
         # First detection with no data → Correction (all signals 0)
-        r1 = self.model.detect({}, None)
-        # r1 doesn't "change" because previous is None from fresh model
+        self.model.detect({}, None)
+        # This first call doesn't "change" because previous is None from fresh model
         # Now force a regime change:
         self.model._previous_regime = Regime.BULL
         r2 = self.model.detect({}, None)

@@ -14,8 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -114,8 +113,7 @@ class OrderTracker:
 
             order.attempts += 1
             try:
-                orders = schwab_client.get_open_orders(order.account_hash)
-                # Also check recent filled orders
+                # Open and recently filled orders both come back from this one call
                 client = schwab_client._require_client()
                 now = datetime.now(timezone.utc)
                 resp = client.get_orders_for_account(

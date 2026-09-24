@@ -260,7 +260,7 @@ def _cmd_pnl(config: Config, console: Console) -> None:
 
 def _cmd_autoresearch(config: Config, console: Console, force_fetch: bool = False) -> None:
     """Run the auto-research pipeline across every configured strategy."""
-    from schwabagent.autoresearch import AutoResearchPipeline, BACKTESTABLE_STRATEGIES
+    from schwabagent.autoresearch import AutoResearchPipeline
     from schwabagent.llm import LLMClient
     from schwabagent.schwab_client import SchwabClient
 

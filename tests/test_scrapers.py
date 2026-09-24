@@ -5,8 +5,6 @@ exercised by running the scraper CLIs manually against the live source.
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
 
 import pytest
 

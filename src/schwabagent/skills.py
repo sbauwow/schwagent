@@ -61,7 +61,8 @@ def _yaml_load(content: str) -> dict:
     if _yaml_load_fn is None:
         import yaml
         loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
-        _yaml_load_fn = lambda v: yaml.load(v, Loader=loader)
+        def _yaml_load_fn(v):
+            return yaml.load(v, Loader=loader)
     result = _yaml_load_fn(content)
     return result if isinstance(result, dict) else {}
 

@@ -21,14 +21,14 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from schwabagent.config import Config
 from schwabagent.indicators import (
-    atr, ema, efficiency_ratio, kama, rsi, rsi_series,
-    kst, cmf, ichimoku, aroon, chandelier_exit, detect_divergence,
+    atr, efficiency_ratio, kama, rsi, rsi_series,
+    kst, cmf, ichimoku, detect_divergence,
 )
 from schwabagent.persistence import StateStore
 from schwabagent.risk import RiskManager

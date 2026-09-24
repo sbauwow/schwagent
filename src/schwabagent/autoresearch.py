@@ -31,7 +31,6 @@ Not covered here:
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import asdict, dataclass, field
@@ -42,7 +41,6 @@ from typing import Any
 import pandas as pd
 
 from schwabagent.backtest import Backtester, BacktestConfig, BacktestResult
-from schwabagent.backtest_validation import format_report as format_validation_report
 from schwabagent.backtest_validation import run_validation
 from schwabagent.config import Config
 from schwabagent.llm import LLMClient
@@ -524,8 +522,8 @@ class AutoResearchPipeline:
 
         lines.append("## Headline metrics")
         lines.append("")
-        lines.append(f"| Metric | Value |")
-        lines.append(f"|---|---|")
+        lines.append("| Metric | Value |")
+        lines.append("|---|---|")
         lines.append(f"| Total return | {_pct(report.total_return_pct)} |")
         lines.append(f"| CAGR | {_pct(report.cagr)} |")
         lines.append(f"| Sharpe | {_num(report.sharpe, 3)} |")
@@ -538,8 +536,8 @@ class AutoResearchPipeline:
 
         lines.append("## Validation")
         lines.append("")
-        lines.append(f"| Test | Result |")
-        lines.append(f"|---|---|")
+        lines.append("| Test | Result |")
+        lines.append("|---|---|")
         lines.append(
             f"| Monte Carlo p-value (Sharpe) | "
             f"{_num(report.monte_carlo_p_sharpe, 4)} "

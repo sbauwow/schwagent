@@ -5,13 +5,11 @@ plus scan/execute with fully mocked dependencies.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 
 import pandas as pd
 import numpy as np
-import pytest
 
 from schwabagent.config import Config
 from schwabagent.strategies.base import Signal, SIGNAL_SCORE

@@ -14,7 +14,6 @@ import pytest
 from schwabagent.breadth import (
     TickDailyState,
     TickPair,
-    TickSignalResult,
     classify_tick_signal,
     is_within_cooldown,
     update_daily_state,

@@ -24,9 +24,7 @@ import asyncio
 import logging
 import threading
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Callable
 
 from schwabagent.config import Config

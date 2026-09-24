@@ -11,8 +11,7 @@ import asyncio
 import logging
 import re
 import threading
-from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Callable
 
 from schwabagent.config import Config
 

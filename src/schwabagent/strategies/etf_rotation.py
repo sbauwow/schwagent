@@ -22,9 +22,8 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-import pandas as pd
 
 from schwabagent.config import Config
 from schwabagent.indicators import sma

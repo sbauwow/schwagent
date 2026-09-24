@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import signal
 import time
-from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -560,7 +560,7 @@ class AgentRunner:
                 )
                 return "\n".join(lines)
             if side == "BUY" and amount > cash:
-                lines.append(f"\n<b>BLOCKED:</b> amount exceeds cash available.")
+                lines.append("\n<b>BLOCKED:</b> amount exceeds cash available.")
                 return "\n".join(lines)
             if side == "SELL":
                 if not held_swvxx:
@@ -576,7 +576,7 @@ class AgentRunner:
             if not confirm:
                 lines.append(
                     "\nAdd <code>confirm</code> to place.  "
-                    f"<i>NAV fills at 4pm ET.</i>"
+                    "<i>NAV fills at 4pm ET.</i>"
                 )
                 return "\n".join(lines)
 
@@ -711,7 +711,7 @@ class AgentRunner:
                 )
                 return "\n".join(lines)
             if side == "BUY" and est_cost > cash:
-                lines.append(f"\n<b>BLOCKED:</b> est cost exceeds cash.")
+                lines.append("\n<b>BLOCKED:</b> est cost exceeds cash.")
                 return "\n".join(lines)
             if side == "SELL":
                 if held is None:
@@ -2231,9 +2231,6 @@ class AgentRunner:
         """
         account = self._get_account()
         self._inject_account(account)
-
-        # Include regime in scan output
-        regime_info = self.get_regime() if self.config.REGIME_ENABLED else None
 
         seen: dict[str, dict] = {}
         all_signals: list[dict] = []

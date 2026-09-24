@@ -590,10 +590,7 @@ class AutoTuner:
 
             state = self.get_state(strategy)
             wins = data.get("wins") or 0
-            losses = data.get("losses") or 0
             win_rate = wins / resolved * 100 if resolved > 0 else 0
-            total_pnl = data.get("total_pnl") or 0
-            avg_pnl = data.get("avg_pnl") or 0
 
             # Compute profit factor from calibration
             cal = self.feedback.calibrate(strategy, days=window)

@@ -10,15 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from schwabagent.config import Config
 from schwabagent.schwab_client import Quote
-from schwabagent.strategies.base import Signal, SIGNAL_SCORE
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -320,7 +318,6 @@ class TestDividendFilter:
 
     def test_near_exdiv_score_reduced(self):
         """ETF near ex-div date gets score reduced by 50%."""
-        from schwabagent.strategies.etf_rotation import ETFRotationStrategy
 
         tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
         quotes = {

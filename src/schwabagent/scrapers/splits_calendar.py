@@ -47,10 +47,6 @@ URL = "https://hosting.briefing.com/cschwab/Calendars/SplitsCalendar.htm"
 USER_AGENT = "Mozilla/5.0 (schwagent splits scraper)"
 CACHE_NAME = "splits_calendar.json"
 
-_MONTH_NAMES = {
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-}
 
 
 @dataclass
@@ -201,7 +197,6 @@ def parse_splits(html: str) -> list[SplitRow]:
     ref = _parse_reference_date(html)
 
     rows: list[SplitRow] = []
-    current_month: str | None = None
 
     content = soup.find("div", id="Content") or soup
     for tr in content.find_all("tr"):
@@ -209,12 +204,8 @@ def parse_splits(html: str) -> list[SplitRow]:
         if not cells:
             continue
 
-        # Month header row
-        section_td = tr.find("td", class_="sectionTitle")
-        if section_td is not None:
-            label = _cell_text(section_td)
-            if label in _MONTH_NAMES:
-                current_month = label
+        # Month header rows carry no data; dates come from each row's own cells
+        if tr.find("td", class_="sectionTitle") is not None:
             continue
 
         # Data row — rD / rL / rDa

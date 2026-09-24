@@ -117,7 +117,7 @@ def adx(
         return float("nan")
 
     h = high.values.astype(float)
-    l = low.values.astype(float)
+    lo = low.values.astype(float)
     c = close.values.astype(float)
     n = len(c)
 
@@ -128,13 +128,13 @@ def adx(
     tr[0] = plus_dm[0] = minus_dm[0] = 0.0
 
     for i in range(1, n):
-        hl = h[i] - l[i]
+        hl = h[i] - lo[i]
         hc = abs(h[i] - c[i - 1])
-        lc = abs(l[i] - c[i - 1])
+        lc = abs(lo[i] - c[i - 1])
         tr[i] = max(hl, hc, lc)
 
         up = h[i] - h[i - 1]
-        down = l[i - 1] - l[i]
+        down = lo[i - 1] - lo[i]
         plus_dm[i] = up if up > down and up > 0 else 0.0
         minus_dm[i] = down if down > up and down > 0 else 0.0
 
@@ -577,14 +577,13 @@ def ichimoku(
         cloud_top/bottom: Current cloud boundaries
         signal: "bullish", "bearish", or "neutral"
     """
-    result: dict[str, float | str] = {}
     if len(close) < senkou_b + kijun:
         return {k: float("nan") for k in
                 ["tenkan_sen", "kijun_sen", "senkou_a", "senkou_b",
                  "chikou_span", "cloud_top", "cloud_bottom", "signal"]}
 
-    def midline(h: pd.Series, l: pd.Series, period: int) -> pd.Series:
-        return (h.rolling(period).max() + l.rolling(period).min()) / 2
+    def midline(h: pd.Series, lo: pd.Series, period: int) -> pd.Series:
+        return (h.rolling(period).max() + lo.rolling(period).min()) / 2
 
     tenkan_s = midline(high, low, tenkan)
     kijun_s = midline(high, low, kijun)
@@ -685,12 +684,12 @@ def parabolic_sar(high: pd.Series, low: pd.Series, af_start: float = 0.02,
     if len(high) < 3:
         return float("nan")
     h = high.values.astype(float)
-    l = low.values.astype(float)
+    lo = low.values.astype(float)
     n = len(h)
 
     # Initialize
     is_long = True
-    sar = l[0]
+    sar = lo[0]
     ep = h[0]  # extreme point
     af = af_start
 
@@ -699,13 +698,13 @@ def parabolic_sar(high: pd.Series, low: pd.Series, af_start: float = 0.02,
         sar = prev_sar + af * (ep - prev_sar)
 
         if is_long:
-            sar = min(sar, l[i - 1])
+            sar = min(sar, lo[i - 1])
             if i >= 2:
-                sar = min(sar, l[i - 2])
-            if l[i] < sar:
+                sar = min(sar, lo[i - 2])
+            if lo[i] < sar:
                 is_long = False
                 sar = ep
-                ep = l[i]
+                ep = lo[i]
                 af = af_start
             else:
                 if h[i] > ep:
@@ -721,8 +720,8 @@ def parabolic_sar(high: pd.Series, low: pd.Series, af_start: float = 0.02,
                 ep = h[i]
                 af = af_start
             else:
-                if l[i] < ep:
-                    ep = l[i]
+                if lo[i] < ep:
+                    ep = lo[i]
                     af = min(af + af_step, af_max)
 
     return float(sar)

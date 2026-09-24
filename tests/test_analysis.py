@@ -7,7 +7,6 @@ from __future__ import annotations
 import math
 import os
 import tempfile
-from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -768,7 +767,6 @@ class TestDriftDetection:
     def _make_feedback_with_drift(self, tmpdir: str):
         from schwabagent.feedback import FeedbackLoop
         from datetime import datetime, timedelta, timezone
-        import sqlite3
 
         config = _make_config(STATE_DIR=tmpdir)
         fb = FeedbackLoop(config)

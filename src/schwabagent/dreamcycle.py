@@ -21,8 +21,7 @@ import logging
 import time
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import datetime, timezone
 
 from schwabagent.config import Config
 
@@ -211,7 +210,6 @@ class DreamCycle:
             logger.warning("[dreamcycle:research] Quote fetch failed: %s", e)
             return
 
-        now = datetime.now(timezone.utc)
         earnings_warnings = []
         volume_anomalies = []
 
@@ -328,7 +326,6 @@ class DreamCycle:
             from schwabagent.telegram import _escape_md
             lines = ["*Strategy Health*\n"]
             for name, s in tuner_status.items():
-                state_str = s["state"].upper()
                 emoji = {"normal": "OK", "throttled": "THROTTLED", "paused": "PAUSED"}.get(s["state"], "?")
                 sizing = f" sizing={s['sizing_factor']:.0%}" if s["sizing_factor"] < 1.0 else ""
                 excluded = f" excluded={','.join(s['excluded_symbols'])}" if s["excluded_symbols"] else ""
@@ -356,9 +353,7 @@ class DreamCycle:
                 continue
 
             wins = data.get("wins") or 0
-            losses = data.get("losses") or 0
             win_rate = wins / resolved * 100 if resolved > 0 else 0
-            avg_pnl = data.get("avg_pnl") or 0
 
             # Identify consistently losing symbols
             signals = fb.get_signal_history(strategy=strat, days=14, limit=500)
