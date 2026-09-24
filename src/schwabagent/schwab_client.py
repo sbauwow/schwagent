@@ -412,6 +412,35 @@ class SchwabClient:
             logger.error("get_account_summary(%s) failed: %s", account_hash[:8], e)
             return None
 
+    def get_transactions(self, account_hash: str, days: int = 730) -> list[dict]:
+        """Raw transaction history for one account, oldest window first.
+
+        Schwab caps a request at one year and keeps roughly two years, so this
+        walks back in 364-day windows until ``days`` is covered or a window is
+        empty past the first year.
+        """
+        import datetime as dt
+
+        client = self._require_client()
+        end = dt.datetime.now(dt.timezone.utc)
+        floor = end - dt.timedelta(days=days)
+        windows: list[list[dict]] = []
+        while end > floor:
+            start = max(end - dt.timedelta(days=364), floor)
+            self._throttle(self._account_lim)
+            try:
+                resp = client.get_transactions(account_hash, start_date=start, end_date=end)
+                resp.raise_for_status()
+                chunk = resp.json() or []
+            except Exception as e:
+                logger.error("get_transactions(%s) failed: %s", account_hash[:8], e)
+                break
+            windows.append(chunk)
+            if not chunk and len(windows) > 1:
+                break
+            end = start
+        return [tx for chunk in reversed(windows) for tx in chunk]
+
     def _parse_account(self, acct: dict, account_hash: str = "") -> AccountSummary | None:
         """Parse raw securitiesAccount dict into AccountSummary."""
         try:

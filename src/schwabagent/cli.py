@@ -25,6 +25,13 @@ def main() -> None:
     parser.add_argument("--interval", type=int, default=None, help="Loop interval in seconds")
     parser.add_argument("--account", type=str, default=None, help="Schwab account hash override")
     parser.add_argument("--strategies", type=str, default=None, help="Comma-separated strategies to run")
+    parser.add_argument("--harvest", action="store_true",
+                        help="List tax-loss harvesting candidates across all accounts and exit (advisory)")
+    parser.add_argument("--rebalance", action="store_true",
+                        help="Plan a tax-aware rebalance to REBALANCE_TARGETS across all accounts and exit (advisory)")
+    parser.add_argument("--rebalance-optimize", type=str, default=None, metavar="METHOD",
+                        help="Derive target weights with the portfolio optimizer over the REBALANCE_TARGETS "
+                             "symbols (max_sharpe, min_volatility, hrp, ...) instead of using their weights")
     parser.add_argument("--pnl", action="store_true", help="Show P&L summary and exit")
     parser.add_argument("--status", action="store_true", help="Show agent status and exit")
     parser.add_argument("--web", action="store_true", help="Start the web dashboard")
@@ -78,6 +85,16 @@ def main() -> None:
 
     if args.autoresearch:
         _cmd_autoresearch(config, console, force_fetch=args.autoresearch_force_fetch)
+        return
+
+    # ── Household: tax-loss harvesting + rebalancing ─────────────────────
+
+    if args.harvest:
+        _cmd_harvest(config, console)
+        return
+
+    if args.rebalance:
+        _cmd_rebalance(config, console, optimize=args.rebalance_optimize)
         return
 
     # ── Status ─────────────────────────────────────────────────────────────
@@ -142,6 +159,146 @@ def main() -> None:
 
 
 # ── Sub-command helpers ────────────────────────────────────────────────────────
+
+def _household_client(config: Config, console: Console):
+    from schwabagent.schwab_client import SchwabClient
+
+    client = SchwabClient(config)
+    if not client.authenticate():
+        console.print("[red]Schwab authentication failed[/red]")
+        sys.exit(1)
+    return client
+
+
+def _cmd_harvest(config: Config, console: Console) -> None:
+    """Tax-loss harvesting candidates. Advisory — nothing is traded."""
+    from schwabagent.household import load_household
+    from schwabagent.tax_harvest import find_harvests
+
+    try:
+        hh = load_household(_household_client(config, console), config)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    console.print()
+    console.rule("[cyan]Tax-loss harvesting — advisory, nothing is traded[/cyan]")
+    taxable = [a.number for a in hh.accounts if a.tax_type == "taxable"]
+    if not taxable:
+        console.print("  [yellow]No taxable accounts mapped[/yellow] — set ACCOUNT_TAX_TYPES "
+                      "(e.g. 1234:taxable,5678:roth).")
+        return
+    unmapped = [a.number for a in hh.accounts if a.tax_type is None and a.total_value > 0]
+    if unmapped:
+        console.print(f"  [yellow]Unmapped accounts (wash-sale checks only):[/yellow] ...{', ...'.join(unmapped)}")
+
+    ideas = find_harvests(hh, config)
+    if not ideas:
+        console.print(f"  No losses over ${config.TLH_MIN_LOSS_USD:,.0f} / {config.TLH_MIN_LOSS_PCT:.0%} "
+                      f"in taxable accounts ...{', ...'.join(taxable)}.")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    for col, justify in [("Acct", "left"), ("Sell", "left"), ("Shares", "right"), ("Loss", "right"),
+                         ("ST / LT", "right"), ("Tax saved", "right"), ("Swap into", "left")]:
+        table.add_column(col, justify=justify)
+    for idea in ideas:
+        table.add_row(
+            f"...{idea.account}", idea.symbol + (" [yellow]*[/yellow]" if idea.estimated_basis else ""),
+            f"{idea.qty:,.4g}", f"${idea.loss:,.0f}",
+            f"${idea.short_term_loss:,.0f} / ${idea.long_term_loss:,.0f}",
+            f"[green]${idea.tax_value:,.0f}[/green]", idea.replacement or "—",
+        )
+    console.print(table)
+    total = sum(i.tax_value for i in ideas)
+    console.print(f"  Estimated tax saved if all are harvested: [green]${total:,.0f}[/green] "
+                  f"(ST {config.TAX_RATE_SHORT:.0%}, LT {config.TAX_RATE_LONG:.0%}; "
+                  "losses beyond gains offset $3k/yr of income, the rest carries forward)")
+    console.print(f"  [yellow]*[/yellow] basis rebuilt from transfers/mergers or estimated from Schwab's "
+                  "average price — confirm lots on schwab.com first")
+    console.print("  Sell with specific-lot identification (the loss lots only); Schwab defaults to FIFO.")
+    for idea in ideas:
+        for w in idea.warnings:
+            console.print(f"  [yellow]![/yellow] ...{idea.account} {idea.symbol}: {w}")
+    no_swap = sorted({i.symbol for i in ideas if i.replacement is None})
+    if no_swap:
+        console.print(f"  No replacement configured for {', '.join(no_swap)} — hold cash or a similar-sector "
+                      "fund meanwhile, or add pairs to TLH_REPLACEMENTS.")
+    console.print(f"  Don't buy any of these back, in any account, before {ideas[0].rebuy_after}.")
+    console.print()
+
+
+def _cmd_rebalance(config: Config, console: Console, optimize: str | None = None) -> None:
+    """Tax-aware household rebalance. Advisory — nothing is traded."""
+    from schwabagent.household import load_household, parse_weights
+    from schwabagent.rebalance import plan_rebalance, targets_from_optimizer
+
+    try:
+        targets = parse_weights(config.REBALANCE_TARGETS)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    if not targets:
+        console.print("[yellow]Set REBALANCE_TARGETS first[/yellow] (e.g. VTI:0.45,VXUS:0.2,BND:0.3,VNQ:0.05)")
+        return
+    client = _household_client(config, console)
+    if optimize:
+        try:
+            targets = targets_from_optimizer(client, list(targets), optimize)
+        except ValueError as e:
+            console.print(f"[red]Optimizer failed: {e}[/red] (market-data token expired? try ./run.sh enroll)")
+            sys.exit(1)
+        console.print(f"  Optimizer ({optimize}) targets: "
+                      + ", ".join(f"{s} {w:.1%}" for s, w in sorted(targets.items(), key=lambda x: -x[1])))
+    try:
+        hh = load_household(client, config, extra_symbols=list(targets))
+        plan = plan_rebalance(hh, targets, config)
+    except (ValueError, RuntimeError) as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    console.print()
+    console.rule(f"[cyan]Household rebalance — ${plan.managed_value:,.0f} managed, advisory[/cyan]")
+    for w in plan.warnings:
+        console.print(f"  [yellow]![/yellow] {w}")
+
+    drift = Table(show_header=True, header_style="bold")
+    for col in ("Holding", "Target", "Now", "After"):
+        drift.add_column(col, justify="left" if col == "Holding" else "right")
+    for sym in [*plan.targets, "CASH"]:
+        target = plan.targets.get(sym, max(1 - sum(plan.targets.values()), 0.0))
+        drift.add_row(sym, f"{target:.1%}", f"{plan.before[sym]:.1%}", f"{plan.after[sym]:.1%}")
+    console.print(drift)
+
+    if not plan.trades:
+        console.print(f"  Everything is within ±{config.REBALANCE_BAND:.0%} of target — no trades.")
+    else:
+        trades = Table(show_header=True, header_style="bold")
+        for col, justify in [("Acct", "left"), ("Type", "left"), ("Side", "left"), ("Symbol", "left"),
+                             ("Shares", "right"), ("≈ $", "right"), ("Realized gain", "right")]:
+            trades.add_column(col, justify=justify)
+        for t in plan.trades:
+            gain = t.short_term_gain + t.long_term_gain
+            trades.add_row(
+                f"...{t.account}", t.tax_type, "[red]SELL[/red]" if t.side == "SELL" else "[green]BUY[/green]",
+                t.symbol, str(t.shares), f"${t.usd:,.0f}",
+                f"${gain:,.0f}" if t.lots else "",
+            )
+        console.print(trades)
+        for t in plan.trades:
+            if t.lots:
+                lots = ", ".join(
+                    f"{qty:g} @ ${lot.cost_per_share:,.2f} ({lot.acquired or 'pre-history'})"
+                    for lot, qty in t.lots
+                )
+                console.print(f"  ...{t.account} {t.symbol} lots to sell: {lots}")
+        console.print(f"  Estimated tax on realized gains: ${plan.estimated_tax:,.0f}. "
+                      "Place sells first; buys are funded by same-account cash and sells.")
+    if plan.unmanaged:
+        top = sorted(plan.unmanaged.items(), key=lambda x: -x[1])
+        console.print(f"  Left alone (not in REBALANCE_TARGETS): ${sum(plan.unmanaged.values()):,.0f} in "
+                      + ", ".join(f"{s}" for s, _ in top[:12]) + (" ..." if len(top) > 12 else ""))
+    console.print()
+
 
 def _cmd_status(config: Config, console: Console) -> None:
     """Print agent config and account summary."""
