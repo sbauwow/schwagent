@@ -12,6 +12,8 @@
 #   ./run.sh pnl          Show P&L summary by strategy
 #   ./run.sh status       Check Schwab connectivity + agent config
 #   ./run.sh web          Start web dashboard (http://localhost:8898)
+#   ./run.sh harvest      Tax-loss harvesting candidates across accounts (advisory)
+#   ./run.sh rebalance    Tax-aware household rebalance plan (advisory; -o max_sharpe)
 #
 
 set -e
@@ -1112,11 +1114,30 @@ if run.final_report:
 "
 }
 
+cmd_harvest() {
+    shift  # drop "harvest"
+    $VENV -m schwabagent.cli --harvest "$@"
+}
+
+cmd_rebalance() {
+    shift  # drop "rebalance"
+    local ARGS=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -o|--optimize) ARGS+=(--rebalance-optimize "$2"); shift 2 ;;
+            *) ARGS+=("$1"); shift ;;
+        esac
+    done
+    $VENV -m schwabagent.cli --rebalance "${ARGS[@]}"
+}
+
 # ---------- main ----------
 
 case "${1:-once}" in
     enroll)  cmd_enroll ;;
     status)  cmd_status ;;
+    harvest) cmd_harvest "$@" ;;
+    rebalance) cmd_rebalance "$@" ;;
     scan)    cmd_scan ;;
     signals) cmd_signals ;;
     once)    cmd_once ;;

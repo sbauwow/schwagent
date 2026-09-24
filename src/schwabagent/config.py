@@ -547,6 +547,41 @@ class Config(BaseSettings):
     def state_dir(self) -> str:
         return self.STATE_DIR
 
+    # ── Household: tax-loss harvesting + cross-account rebalancing ────────
+    # Advisory only — both commands print proposed trades and never place orders.
+    # The API can't tell an IRA from a taxable account, so map each account's
+    # last 4 digits: taxable | traditional | roth. Unmapped accounts count for
+    # wash-sale checks but get no harvest suggestions and are left out of rebalancing.
+    ACCOUNT_TAX_TYPES: str = ""          # e.g. "1234:taxable,5678:roth,9012:traditional"
+    TAX_RATE_SHORT: float = 0.24         # marginal rate on short-term gains (ordinary income)
+    TAX_RATE_LONG: float = 0.15          # long-term capital gains rate
+    TLH_MIN_LOSS_USD: float = 200.0      # skip harvests smaller than this
+    TLH_MIN_LOSS_PCT: float = 0.05       # ... or shallower than this vs. basis
+    WASH_SALE_DAYS: int = 30
+    # Swap partners that track a *different* index, so they are arguably not
+    # "substantially identical". Not tax advice — review before relying on it.
+    TLH_REPLACEMENTS: str = (
+        "SPY:SCHX,VOO:SCHX,IVV:SCHX,SCHX:VOO,VTI:SCHB,SCHB:VTI,ITOT:VTI,"
+        "VXUS:IXUS,IXUS:VXUS,VEA:IEFA,IEFA:VEA,VWO:IEMG,IEMG:VWO,"
+        "QQQ:VGT,VGT:QQQ,BND:AGG,AGG:BND,VNQ:SCHH,SCHH:VNQ"
+    )
+    # Household target allocation, weights summing to 1 (cash = what's left).
+    REBALANCE_TARGETS: str = ""          # e.g. "VTI:0.45,VXUS:0.2,BND:0.3,VNQ:0.05"
+    REBALANCE_BAND: float = 0.02         # tolerated absolute drift per holding before trading
+    REBALANCE_MIN_TRADE_USD: float = 100.0
+    REBALANCE_CASH_BUFFER_USD: float = 0.0  # cash left untouched in every account
+    # Money-market funds count as cash; the plan sells them when buys need the money.
+    CASH_EQUIVALENTS: str = "SWVXX,SNVXX,SNOXX,SNSXX,SWGXX,SNAXX,SPAXX,FDRXX,VMFXX"
+    # Held best in tax-deferred accounts (interest/non-qualified dividends taxed yearly).
+    TAX_INEFFICIENT: str = (
+        "BND,AGG,BNDX,TLT,IEF,SHY,GOVT,LQD,HYG,JNK,TIP,SCHP,VTIP,MUB,"
+        "VNQ,SCHH,XLRE,IYR,PFF,PFFD"
+    )
+    # Yearly tax drag (fraction of value) of holding a tax-inefficient fund in a
+    # taxable / Roth account; the rebalancer trades that off against realizing gains.
+    LOCATION_DRAG_TAXABLE: float = 0.004
+    LOCATION_DRAG_ROTH: float = 0.002
+
     def validate(self) -> list[str]:
         """Return list of validation errors (empty = all good)."""
         errors = []
